@@ -2,8 +2,9 @@ name: Release
 
 # Push a tag like v0.1.0 to build the universal macOS DMG (signed and notarized
 # when the secrets below are configured) and attach it to a GitHub Release with
-# checksums. The DMG version comes from info.productVersion in
-# cmd/skim-desktop/wails.json, so bump that before tagging.
+# checksums. Tag builds stamp the tag (minus the leading "v") into
+# info.productVersion in cmd/skim-desktop/wails.json before packaging, so the
+# DMG name and the app's bundle version always match the tag.
 #
 # Run it manually (workflow_dispatch) to exercise the exact sign/notarize/staple
 # pipeline against the configured secrets WITHOUT cutting a release: the build
@@ -61,6 +62,13 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
           rm -f "$CERT_PATH"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          CONFIG=cmd/skim-desktop/wails.json
+          jq --arg v "${GITHUB_REF_NAME#v}" '.info.productVersion = $v' "$CONFIG" > "$RUNNER_TEMP/wails.json"
+          mv "$RUNNER_TEMP/wails.json" "$CONFIG"
       - name: Package (build, DMG; sign + notarize when secrets are present)
         run: make package-macos
       - name: Clean up signing keychain

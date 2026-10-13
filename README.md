@@ -74,7 +74,7 @@ The desktop app is a [Wails v2](https://wails.io) shell around the same service 
 | `make package-windows` | Windows exe and NSIS installer (needs `makensis`) |
 | `make package-linux` | Linux binary and `.deb`, built in Docker (`LINUX_ARCH=arm64` for ARM) |
 
-`make package-macos` signs with `MACOS_SIGNING_IDENTITY` and notarizes with `NOTARY_PROFILE` or `NOTARY_APPLE_ID` + `NOTARY_PASSWORD` + `NOTARY_TEAM_ID`; without them the DMG is unsigned. To release, bump `info.productVersion` in `cmd/skim-desktop/wails.json` and push a `vX.Y.Z` tag. CI builds, signs, notarizes, and publishes the DMG.
+`make package-macos` signs with `MACOS_SIGNING_IDENTITY` and notarizes with `NOTARY_PROFILE` or `NOTARY_APPLE_ID` + `NOTARY_PASSWORD` + `NOTARY_TEAM_ID`; without them the DMG is unsigned. To release, push a `vX.Y.Z` tag. CI sets the app version from the tag, then builds, signs, notarizes, and publishes the DMG.
 
 ## Development
 
