@@ -1,0 +1,9 @@
+/bin/
+/cmd/skim-desktop/build/bin/
+/cmd/skim-desktop/build/windows/installer/tmp/
+.DS_Store
+
+# Local environment files (keep the example trackable)
+.env
+.env.*
+!.env.example

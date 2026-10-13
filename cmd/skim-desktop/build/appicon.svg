@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Source for appicon.png (Wails generates the .icns/.ico from it). Mark from web/src/skim.svg, scaled 30x. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#0969da"/>
+  <g fill="#ffffff">
+    <rect x="243.5" y="273.5" width="537" height="57" rx="28.5"/>
+    <rect x="243.5" y="483.5" width="417" height="57" rx="28.5"/>
+    <rect x="243.5" y="693.5" width="177" height="57" rx="28.5"/>
+  </g>
+</svg>

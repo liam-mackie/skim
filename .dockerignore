@@ -1,0 +1,8 @@
+.git
+.idea
+.env
+bin
+web/node_modules
+web/dist
+cmd/skim-desktop/build/bin
+cmd/skim-desktop/build/windows/installer/tmp
