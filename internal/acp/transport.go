@@ -23,7 +23,6 @@ const (
 	maxResponseBytes      = 4 << 20
 	maxPromptBytes        = 2 << 20
 	maxPendingPermissions = 64
-	runTimeout            = 5 * time.Minute
 	shutdownGrace         = time.Second
 )
 

@@ -119,10 +119,13 @@ func New(a *app.App, c Config) (http.Handler, error) {
 	handle("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var s domain.SettingsUpdate
 		if err := decode(w, r, &s); err != nil {
-			// Decoder errors may include an unknown field containing a pasted key.
-			return nil, errors.New("invalid settings JSON; check the settings fields and API key updates")
+			if size := (*http.MaxBytesError)(nil); errors.As(err, &size) {
+				return nil, err
+			}
+			// Other decoder errors may include an unknown field containing a pasted key.
+			return nil, errors.New("invalid settings JSON; check the settings fields and credential updates")
 		}
-		return a.SetSettings(r.Context(), s.Settings, s.ProviderKeys...)
+		return a.SetSettings(r.Context(), s)
 	})
 	handle("POST /api/pull-request", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var v struct {
@@ -171,15 +174,6 @@ func New(a *app.App, c Config) (http.Handler, error) {
 		}
 		style, n, err := a.ImportStyle(r.Context(), v.Owner, v.Repo)
 		return map[string]any{"style": style, "sampleCount": n}, err
-	})
-	handle("PUT /api/style", func(w http.ResponseWriter, r *http.Request) (any, error) {
-		var v struct {
-			Style string `json:"style"`
-		}
-		if err := decode(w, r, &v); err != nil {
-			return nil, err
-		}
-		return map[string]string{"style": v.Style}, a.SetStyle(r.Context(), v.Style)
 	})
 	handle("POST /api/comments", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var v domain.ManualComment
@@ -242,6 +236,13 @@ func New(a *app.App, c Config) (http.Handler, error) {
 			return nil, err
 		}
 		return a.CancelVerification(r.Context(), r.PathValue("id"), identity)
+	})
+	handle("POST /api/verifications/clear", func(w http.ResponseWriter, r *http.Request) (any, error) {
+		if err := decode(w, r, &struct{}{}); err != nil {
+			return nil, err
+		}
+		jobs, err := a.ClearVerificationActivity(r.Context())
+		return map[string]any{"jobs": jobs}, err
 	})
 	handle("GET /api/permissions", func(w http.ResponseWriter, r *http.Request) (any, error) {
 		return map[string]any{"permissions": a.Agent.Permissions()}, nil

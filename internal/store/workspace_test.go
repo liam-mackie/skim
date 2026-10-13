@@ -67,7 +67,7 @@ func TestManagedRootDefaultsAndExplicitSettingsPersist(t *testing.T) {
 	settings := s.Settings()
 	root := filepath.Join(t.TempDir(), "review worktrees")
 	settings.ACP.ManagedRoot = root
-	if committed, err := s.UpdateSettings(settings, nil, func(*Record, domain.Settings) {}); err != nil || !committed {
+	if committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings}, func(*Record, domain.Settings) {}); err != nil || !committed {
 		t.Fatalf("save root: %v", err)
 	}
 	if err := s.Close(); err != nil {
@@ -83,7 +83,7 @@ func TestManagedRootDefaultsAndExplicitSettingsPersist(t *testing.T) {
 	}
 	settings = s.Settings()
 	settings.ACP.ManagedRoot = ""
-	if _, err := s.UpdateSettings(settings, nil, func(*Record, domain.Settings) {}); err != nil {
+	if _, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings}, func(*Record, domain.Settings) {}); err != nil {
 		t.Fatal(err)
 	}
 	if s.Settings().ACP.ManagedRoot != filepath.Join(dir, "workspaces") {

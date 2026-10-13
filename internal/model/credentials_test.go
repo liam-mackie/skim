@@ -76,13 +76,13 @@ func TestCredentialHTTPAuthenticationAndReflectedRedaction(t *testing.T) {
 				}
 				defer s.Close()
 				if source != "environment" {
-					committed, err := s.UpdateSettings(settings, []domain.ProviderKeyUpdate{{ProviderID: "text", APIKey: savedKey}}, func(*store.Record, domain.Settings) {})
+					committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings, ProviderKeys: []domain.ProviderKeyUpdate{{ProviderID: "text", APIKey: savedKey}}}, func(*store.Record, domain.Settings) {})
 					if err != nil || !committed {
 						t.Fatalf("save credential: %v", err)
 					}
 				}
 				if source == "removed" {
-					committed, err := s.UpdateSettings(s.Settings(), []domain.ProviderKeyUpdate{{ProviderID: "text", Remove: true}}, func(*store.Record, domain.Settings) {})
+					committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: s.Settings(), ProviderKeys: []domain.ProviderKeyUpdate{{ProviderID: "text", Remove: true}}}, func(*store.Record, domain.Settings) {})
 					if err != nil || !committed {
 						t.Fatalf("remove credential: %v", err)
 					}
@@ -124,7 +124,7 @@ func TestCredentialRevisionRequiresResolverAndRejectsStaleRequests(t *testing.T)
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if committed, err := s.UpdateSettings(settings, []domain.ProviderKeyUpdate{{ProviderID: "text", APIKey: "saved-fixture"}}, func(*store.Record, domain.Settings) {}); err != nil || !committed {
+	if committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings, ProviderKeys: []domain.ProviderKeyUpdate{{ProviderID: "text", APIKey: "saved-fixture"}}}, func(*store.Record, domain.Settings) {}); err != nil || !committed {
 		t.Fatalf("save credential: %v", err)
 	}
 	stale := s.Settings()
@@ -133,7 +133,7 @@ func TestCredentialRevisionRequiresResolverAndRejectsStaleRequests(t *testing.T)
 	if _, err := client.Chat(context.Background(), stale, stale.Roles.Chat, nil, nil); err == nil || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("saved revision without resolver was not refused: %v", err)
 	}
-	if committed, err := s.UpdateSettings(s.Settings(), []domain.ProviderKeyUpdate{{ProviderID: "text", APIKey: "replacement-fixture"}}, func(*store.Record, domain.Settings) {}); err != nil || !committed {
+	if committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: s.Settings(), ProviderKeys: []domain.ProviderKeyUpdate{{ProviderID: "text", APIKey: "replacement-fixture"}}}, func(*store.Record, domain.Settings) {}); err != nil || !committed {
 		t.Fatalf("replace credential: %v", err)
 	}
 	client.ResolveCredential = s.ResolveCredential

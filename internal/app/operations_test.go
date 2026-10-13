@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"skim/internal/acp"
 	"skim/internal/domain"
 	"skim/internal/provider"
 )
 
 type operationCall struct {
-	kind     string
 	messages []domain.Message
 	reply    chan string
 }
@@ -35,11 +35,7 @@ func (p *operationTransport) RoundTrip(request *http.Request) (*http.Response, e
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		return nil, err
 	}
-	kind := "chat"
-	if len(input.Messages) > 0 && strings.Contains(input.Messages[0].Content, "Review this changed file") {
-		kind = "review"
-	}
-	call := operationCall{kind: kind, messages: input.Messages, reply: make(chan string, 1)}
+	call := operationCall{messages: input.Messages, reply: make(chan string, 1)}
 	select {
 	case p.calls <- call:
 	case <-request.Context().Done():
@@ -60,9 +56,9 @@ func (p *operationTransport) RoundTrip(request *http.Request) (*http.Response, e
 	}
 }
 
-func operationFixture(t *testing.T) (*App, domain.PRIdentity, *operationTransport) {
+func operationFixture(t *testing.T) (*App, domain.PRIdentity, *operationTransport, *reviewFixture) {
 	t.Helper()
-	a, identity, _ := newReviewProgressFixture(t, []domain.File{reviewProgressFile("a.go")})
+	a, identity, agent := newReviewProgressFixture(t, []domain.File{reviewProgressFile("a.go")})
 	d := a.Store.Snapshot()
 	d.Settings.Roles.Chat = d.Settings.Roles.Review
 	if err := a.Store.Commit(d); err != nil {
@@ -70,22 +66,23 @@ func operationFixture(t *testing.T) (*App, domain.PRIdentity, *operationTranspor
 	}
 	transport := &operationTransport{calls: make(chan operationCall, 8)}
 	a.Models.HTTP = &http.Client{Transport: transport}
-	return a, identity, transport
+	return a, identity, transport, agent
 }
 
-func nextOperationCall(t *testing.T, p *operationTransport, kind string) operationCall {
+func nextOperationCall(t *testing.T, p *operationTransport) operationCall {
 	t.Helper()
 	select {
 	case call := <-p.calls:
-		if call.kind != kind {
-			t.Fatalf("model call %s, want %s", call.kind, kind)
-		}
 		return call
 	case <-time.After(5 * time.Second):
-		t.Fatalf("%s did not reach its model while independent work was held", kind)
+		t.Fatal("chat did not reach its model while independent work was held")
 		return operationCall{}
 	}
 }
+
+// newProgressFindings proposes only the new finding, twice, so deduplication
+// depends solely on the drafts saved when the review commits.
+var newProgressFindings = agentReport(`{"comments":[{"path":"a.go","startLine":1,"endLine":1,"side":"RIGHT","body":"New finding"},{"path":"a.go","startLine":1,"endLine":1,"side":"RIGHT","body":" New finding "}]}`)
 
 type chatResult struct {
 	thread domain.ChatThread
@@ -123,11 +120,11 @@ func TestReviewChatAndManualWritesPreserveBothCompletionOrders(t *testing.T) {
 			name = "review-first"
 		}
 		t.Run(name, func(t *testing.T) {
-			a, identity, p := operationFixture(t)
+			a, identity, p, agent := operationFixture(t)
 			reviewDone, _ := startProgressReview(t, a)
-			reviewCall := nextOperationCall(t, p, "review")
+			reviewCall := agent.await(t)
 			chatDone, _ := startOperationChat(t, a, "")
-			chatCall := nextOperationCall(t, p, "chat")
+			chatCall := nextOperationCall(t, p)
 			manual, err := a.CreateComment(context.Background(), operationComment(identity, "New finding"))
 			if err != nil || manual.Revision != 1 {
 				t.Fatalf("manual during AI: %+v %v", manual, err)
@@ -138,7 +135,7 @@ func TestReviewChatAndManualWritesPreserveBothCompletionOrders(t *testing.T) {
 				t.Fatalf("edit during AI: %+v %v", edited, err)
 			}
 			finishReview := func() {
-				reviewCall.reply <- firstProgressFindings
+				agent.answer(t, reviewCall, newProgressFindings)
 				result := awaitProgressReview(t, reviewDone)
 				if result.err != nil {
 					t.Fatal(result.err)
@@ -173,9 +170,9 @@ func TestReviewChatAndManualWritesPreserveBothCompletionOrders(t *testing.T) {
 }
 
 func TestOperationAdmissionRejectsConflictsWithoutQueueing(t *testing.T) {
-	a, identity, p := operationFixture(t)
+	a, identity, _, agent := operationFixture(t)
 	done, cancel := startProgressReview(t, a)
-	nextOperationCall(t, p, "review")
+	agent.await(t)
 	ctx, stop := context.WithTimeout(context.Background(), time.Second)
 	defer stop()
 	checks := []func() error{
@@ -183,8 +180,7 @@ func TestOperationAdmissionRejectsConflictsWithoutQueueing(t *testing.T) {
 		func() error { _, err := a.Publish(ctx, identity, "COMMENT", "summary"); return err },
 		func() error { _, err := a.FinishReview(ctx, FinishReview{PRIdentity: identity}); return err },
 		func() error { _, err := a.Load(ctx, "https://github.com/owner/repo/pull/2"); return err },
-		func() error { _, err := a.SetSettings(ctx, a.Settings()); return err },
-		func() error { return a.SetStyle(ctx, "changed instructions") },
+		func() error { _, err := a.SetSettings(ctx, domain.SettingsUpdate{Settings: a.Settings()}); return err },
 		func() error { _, _, err := a.ImportStyle(ctx, "owner", "repo"); return err },
 	}
 	for i, check := range checks {
@@ -199,15 +195,15 @@ func TestOperationAdmissionRejectsConflictsWithoutQueueing(t *testing.T) {
 }
 
 func TestConcurrentThreadsAndSameThreadAdmission(t *testing.T) {
-	a, _, p := operationFixture(t)
+	a, _, p, _ := operationFixture(t)
 	first, _ := startOperationChat(t, a, "")
-	nextOperationCall(t, p, "chat").reply <- "First answer"
+	nextOperationCall(t, p).reply <- "First answer"
 	initial := awaitOperationChat(t, first)
 	if initial.err != nil {
 		t.Fatal(initial.err)
 	}
 	turn, _ := startOperationChat(t, a, initial.thread.ID)
-	turnCall := nextOperationCall(t, p, "chat")
+	turnCall := nextOperationCall(t, p)
 	if len(turnCall.messages) != 4 || turnCall.messages[2].Content != "First answer" {
 		t.Fatalf("turn did not capture its own prior conversation: %+v", turnCall.messages)
 	}
@@ -217,7 +213,7 @@ func TestConcurrentThreadsAndSameThreadAdmission(t *testing.T) {
 		t.Fatalf("same-thread turn: %v", err)
 	}
 	other, _ := startOperationChat(t, a, "")
-	nextOperationCall(t, p, "chat").reply <- "Other conversation"
+	nextOperationCall(t, p).reply <- "Other conversation"
 	if result := awaitOperationChat(t, other); result.err != nil {
 		t.Fatal(result.err)
 	}
@@ -231,22 +227,23 @@ func TestConcurrentThreadsAndSameThreadAdmission(t *testing.T) {
 func TestOperationCommitsRejectChangedEvidenceAndThreadRevision(t *testing.T) {
 	for _, change := range []string{"key", "base", "head", "patch", "thread"} {
 		t.Run(change, func(t *testing.T) {
-			a, _, p := operationFixture(t)
+			a, _, p, agent := operationFixture(t)
 			var reviewDone <-chan reviewProgressResult
 			var chatDone <-chan chatResult
 			var call operationCall
+			var permission acp.Permission
 			if change == "thread" {
 				first, _ := startOperationChat(t, a, "")
-				nextOperationCall(t, p, "chat").reply <- "First answer"
+				nextOperationCall(t, p).reply <- "First answer"
 				initial := awaitOperationChat(t, first)
 				if initial.err != nil {
 					t.Fatal(initial.err)
 				}
 				chatDone, _ = startOperationChat(t, a, initial.thread.ID)
-				call = nextOperationCall(t, p, "chat")
+				call = nextOperationCall(t, p)
 			} else {
 				reviewDone, _ = startProgressReview(t, a)
-				call = nextOperationCall(t, p, "review")
+				permission = agent.await(t)
 			}
 			d := a.Store.Snapshot()
 			r := d.Reviews[d.Active]
@@ -269,11 +266,12 @@ func TestOperationCommitsRejectChangedEvidenceAndThreadRevision(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := a.Store.State()
-			call.reply <- firstProgressFindings
 			var err error
 			if chatDone != nil {
+				call.reply <- "Stale answer"
 				err = awaitOperationChat(t, chatDone).err
 			} else {
+				agent.answer(t, permission, firstProgressFindings)
 				err = awaitProgressReview(t, reviewDone).err
 			}
 			if !errors.Is(err, ErrReviewBusy) || !reflect.DeepEqual(before, a.Store.State()) {
@@ -286,11 +284,11 @@ func TestOperationCommitsRejectChangedEvidenceAndThreadRevision(t *testing.T) {
 func TestOperationCancellationDoesNotLoseIndependentCompletion(t *testing.T) {
 	for _, cancelReview := range []bool{false, true} {
 		t.Run(map[bool]string{false: "chat", true: "review"}[cancelReview], func(t *testing.T) {
-			a, _, p := operationFixture(t)
+			a, _, p, agent := operationFixture(t)
 			reviewDone, stopReview := startProgressReview(t, a)
-			reviewCall := nextOperationCall(t, p, "review")
+			reviewCall := agent.await(t)
 			chatDone, stopChat := startOperationChat(t, a, "")
-			chatCall := nextOperationCall(t, p, "chat")
+			chatCall := nextOperationCall(t, p)
 			if cancelReview {
 				chatCall.reply <- "Saved independently"
 				if result := awaitOperationChat(t, chatDone); result.err != nil {
@@ -304,7 +302,7 @@ func TestOperationCancellationDoesNotLoseIndependentCompletion(t *testing.T) {
 					t.Fatalf("cancel lost chat: %+v", state)
 				}
 			} else {
-				reviewCall.reply <- firstProgressFindings
+				agent.answer(t, reviewCall, firstProgressFindings)
 				if result := awaitProgressReview(t, reviewDone); result.err != nil {
 					t.Fatal(result.err)
 				}
@@ -321,27 +319,29 @@ func TestOperationCancellationDoesNotLoseIndependentCompletion(t *testing.T) {
 }
 
 func TestCloseCancelsAndDrainsAllOperations(t *testing.T) {
-	a, identity, p := operationFixture(t)
+	a, identity, p, agent := operationFixture(t)
 	drain := make(chan struct{})
-	p.cancelled, p.drain = make(chan struct{}, 2), drain
+	p.cancelled, p.drain = make(chan struct{}, 1), drain
 	release := sync.OnceFunc(func() { close(drain) })
 	defer release()
 	reviewDone, _ := startProgressReview(t, a)
-	nextOperationCall(t, p, "review")
+	agent.await(t)
 	chatDone, _ := startOperationChat(t, a, "")
-	nextOperationCall(t, p, "chat")
+	nextOperationCall(t, p)
 	manual, err := a.CreateComment(context.Background(), operationComment(identity, "Persist across shutdown"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	closed := make(chan error, 1)
 	go func() { closed <- a.Close() }()
-	for range 2 {
-		select {
-		case <-p.cancelled:
-		case <-time.After(5 * time.Second):
-			t.Fatal("shutdown did not cancel every model")
-		}
+	select {
+	case <-p.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not cancel the model")
+	}
+	// The cancelled agent review has finished, but Close still waits for chat.
+	if result := awaitProgressReview(t, reviewDone); result.err == nil {
+		t.Fatal("shutdown review saved")
 	}
 	select {
 	case err := <-closed:
@@ -349,9 +349,6 @@ func TestCloseCancelsAndDrainsAllOperations(t *testing.T) {
 	default:
 	}
 	release()
-	if result := awaitProgressReview(t, reviewDone); result.err == nil {
-		t.Fatal("shutdown review saved")
-	}
 	if result := awaitOperationChat(t, chatDone); result.err == nil {
 		t.Fatal("shutdown chat saved")
 	}
@@ -373,11 +370,11 @@ func TestCloseCancelsAndDrainsAllOperations(t *testing.T) {
 }
 
 func TestReplyLeaseAllowsReviewManualAndFinishAndDrainsOnClose(t *testing.T) {
-	a, identity, transport := operationFixture(t)
+	a, identity, _, agent := operationFixture(t)
 	started, cancelled, drain := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(drain) })
 	defer release()
-	p := &publishedThreadsProvider{}
+	p := &publishedThreadsProvider{Provider: agent.provider}
 	p.reply = func(ctx context.Context, _ domain.PullRequest, _, _ string) (domain.PublishedComment, error) {
 		close(started)
 		<-ctx.Done()
@@ -405,7 +402,7 @@ func TestReplyLeaseAllowsReviewManualAndFinishAndDrainsOnClose(t *testing.T) {
 		t.Fatalf("reply blocked workspace finish: %v", err)
 	}
 	reviewDone, _ := startProgressReview(t, a)
-	nextOperationCall(t, transport, "review")
+	agent.await(t)
 	closed := make(chan error, 1)
 	go func() { closed <- a.Close() }()
 	select {
@@ -451,17 +448,17 @@ func TestDeleteDuringReviewAndChatSurvivesEitherCompletionOrder(t *testing.T) {
 			name = "review-first"
 		}
 		t.Run(name, func(t *testing.T) {
-			a, _, p := operationFixture(t)
+			a, _, p, agent := operationFixture(t)
 			reviewDone, _ := startProgressReview(t, a)
-			reviewCall := nextOperationCall(t, p, "review")
+			reviewCall := agent.await(t)
 			chatDone, _ := startOperationChat(t, a, "")
-			chatCall := nextOperationCall(t, p, "chat")
+			chatCall := nextOperationCall(t, p)
 			deleted, err := a.DeleteComment(context.Background(), "old-draft")
 			if err != nil || deleted != (domain.Comment{ID: "old-draft", Revision: 1, Status: "deleted"}) {
 				t.Fatalf("delete during AI: %+v %v", deleted, err)
 			}
 			finishReview := func() {
-				reviewCall.reply <- firstProgressFindings
+				agent.answer(t, reviewCall, newProgressFindings)
 				result := awaitProgressReview(t, reviewDone)
 				if result.err != nil || result.state.Comments[0] != deleted {
 					t.Fatalf("review resurrected deleted ID: %+v %v", result.state, result.err)

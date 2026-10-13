@@ -34,6 +34,10 @@ func TestAnalysisCommitsDuringHeldForegroundModels(t *testing.T) {
 			control.foregroundGate = make(chan struct{})
 			h := newHarnessWithModels(t, control)
 			t.Cleanup(func() { control.release(nil, false, true) })
+			// The agent review is held on its permission request, not a model gate.
+			if route == "/api/review" {
+				h.agentReview(t, "", true)
+			}
 			var loaded domain.State
 			h.request(t, "POST", "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/7"}, &loaded)
 			done := make(chan struct{})
@@ -45,11 +49,16 @@ func TestAnalysisCommitsDuringHeldForegroundModels(t *testing.T) {
 				}
 				h.request(t, "POST", route, input, nil)
 			}()
-			waitCondition(t, func() bool {
-				control.mu.Lock()
-				defer control.mu.Unlock()
-				return control.foregroundStarted > 0
-			})
+			reviewPermission := ""
+			if route == "/api/review" {
+				reviewPermission = awaitReviewPermission(t, h)
+			} else {
+				waitCondition(t, func() bool {
+					control.mu.Lock()
+					defer control.mu.Unlock()
+					return control.foregroundStarted > 0
+				})
+			}
 			control.release([]string{"src/calc.go"}, true, false)
 			partial := h.awaitAnalysis(t, func(u domain.AnalysisUpdate) bool {
 				return u.Analysis != nil && u.Analysis.Risk.Completed == 1 && u.Analysis.Grouping.Status == "complete"
@@ -63,6 +72,9 @@ func TestAnalysisCommitsDuringHeldForegroundModels(t *testing.T) {
 			default:
 			}
 			control.release(nil, false, true)
+			if reviewPermission != "" {
+				h.request(t, "POST", "/api/permissions/"+reviewPermission, map[string]string{"optionId": "allow-once"}, nil)
+			}
 			select {
 			case <-done:
 			case <-time.After(5 * time.Second):

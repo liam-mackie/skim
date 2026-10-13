@@ -38,7 +38,7 @@ func TestRiskPolicyInvalidatesOnlyRiskAndReusesCurrentResults(t *testing.T) {
 					Comments:    []domain.Comment{{ID: "draft", Body: "keep draft"}},
 					Chats:       []domain.ChatThread{{ID: "chat", Messages: []domain.Message{{Role: "user", Content: "keep chat"}}}},
 					Style:       "keep style",
-					ReviewRun:   &domain.ReviewRun{HeadSHA: pr.HeadSHA, ReviewedPaths: []string{"notes"}},
+					ReviewRun:   &domain.ReviewRun{HeadSHA: pr.HeadSHA, Report: "keep report", Rejected: []domain.RejectedComment{}},
 					Analysis: &domain.Analysis{
 						Generation: "old-generation",
 						Risk:       domain.AnalysisTask{Status: "failed", Completed: 1, Total: 1, Error: "old error", FailedFiles: []domain.SkippedFile{{Path: "notes", Reason: "old failure"}}},
@@ -106,7 +106,7 @@ func TestGroupingPolicyInvalidatesOnlyContextAndReusesCurrentResults(t *testing.
 					Comments:    []domain.Comment{{ID: "draft", Body: "keep draft"}},
 					Chats:       []domain.ChatThread{{ID: "chat", Messages: []domain.Message{{Role: "user", Content: "keep chat"}}}},
 					Style:       "keep style",
-					ReviewRun:   &domain.ReviewRun{HeadSHA: pr.HeadSHA, ReviewedPaths: []string{"notes"}},
+					ReviewRun:   &domain.ReviewRun{HeadSHA: pr.HeadSHA, Report: "keep report", Rejected: []domain.RejectedComment{}},
 					Analysis: &domain.Analysis{
 						Generation: "old-generation",
 						Risk:       riskTask,
@@ -252,9 +252,7 @@ func TestSettingsRenamePreservesAnalysisGenerationCachesRolesAndCredentials(t *t
 	// No providers can be called: this App has no model client, and cached tasks
 	// are complete. A rename must not schedule replacement analysis.
 	a := &App{Store: s, gate: make(chan struct{}, 1), lifetime: context.Background()}
-	if _, err := a.SetSettings(context.Background(), s.Settings(),
-		domain.ProviderKeyUpdate{ProviderID: "text", APIKey: "text-fixture-key"},
-		domain.ProviderKeyUpdate{ProviderID: "risk", APIKey: "risk-fixture-key"}); err != nil {
+	if _, err := a.SetSettings(context.Background(), domain.SettingsUpdate{Settings: s.Settings(), ProviderKeys: []domain.ProviderKeyUpdate{{ProviderID: "text", APIKey: "text-fixture-key"}, {ProviderID: "risk", APIKey: "risk-fixture-key"}}}); err != nil {
 		t.Fatal(err)
 	}
 	settings := s.Settings()
@@ -283,7 +281,7 @@ func TestSettingsRenamePreservesAnalysisGenerationCachesRolesAndCredentials(t *t
 	before := s.Snapshot()
 	settings.Providers[0].Name = "  Renamed text  "
 	settings.Providers[1].Name = "  Renamed risk  "
-	got, err := a.SetSettings(context.Background(), settings)
+	got, err := a.SetSettings(context.Background(), domain.SettingsUpdate{Settings: settings})
 	if err != nil {
 		t.Fatal(err)
 	}

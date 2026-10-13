@@ -113,6 +113,8 @@ func startVerificationInThread(t *testing.T, h *harness, ctx context.Context, th
 	return done
 }
 
+// awaitPermission returns a verification's permission request, never a held
+// agent review's (reviews have no thread).
 func awaitPermission(t *testing.T, h *harness, done <-chan verificationResponse) string {
 	t.Helper()
 	deadline := time.NewTimer(15 * time.Second)
@@ -126,10 +128,30 @@ func awaitPermission(t *testing.T, h *harness, done <-chan verificationResponse)
 		case <-deadline.C:
 			t.Fatal("ACP permission did not arrive")
 		case <-tick.C:
-			if permissions := h.app.Agent.Permissions(); len(permissions) > 0 {
-				return permissions[0].ID
+			for _, permission := range h.app.Agent.Permissions() {
+				if permission.ThreadID != "" {
+					return permission.ID
+				}
 			}
 		}
+	}
+}
+
+// awaitReviewPermission returns the permission request of an agent review held
+// by harness.agentReview(..., true), allowing time for its checkout.
+func awaitReviewPermission(t *testing.T, h *harness) string {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		for _, permission := range h.app.Agent.Permissions() {
+			if permission.ThreadID == "" {
+				return permission.ID
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("agent review did not reach its agent")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -179,9 +201,8 @@ func TestHTTPManagedWorkspaceLifecycle(t *testing.T) {
 	var state domain.State
 	h.request(t, "POST", "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/7"}, &state)
 	h.request(t, "POST", "/api/chat", map[string]string{"message": "Explain this diff."}, &domain.ChatThread{})
-	h.request(t, "POST", "/api/review", struct{}{}, &state)
-	if state.Workspace.Status != "not_created" || state.Workspace.Path != "" {
-		t.Fatalf("model-only actions created a checkout: %+v", state.Workspace)
+	if state = h.app.State(); state.Workspace.Status != "not_created" || state.Workspace.Path != "" {
+		t.Fatalf("model-only chat created a checkout: %+v", state.Workspace)
 	}
 	state = verifyRound(t, h)
 	path := state.Workspace.Path
@@ -194,6 +215,12 @@ func TestHTTPManagedWorkspaceLifecycle(t *testing.T) {
 	state = verifyRound(t, h)
 	if state.Workspace.Path != path {
 		t.Fatal("clean matching worktree was not reused")
+	}
+	// The agent review runs in its own checkout, separate from verification's.
+	h.request(t, "POST", "/api/review", struct{}{}, &state)
+	review := h.app.Workspaces.TaskStatus(state.PullRequest.Key(), "review", h.app.Settings().ACP.ManagedRoot)
+	if review.Status != "ready" || review.Path == "" || review.Path == path || fixtureGit(t, review.Path, "rev-parse", "HEAD") != state.PullRequest.HeadSHA {
+		t.Fatalf("agent review did not use its own exact-head checkout: %+v", review)
 	}
 	h.request(t, "POST", "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/8"}, &state)
 	if _, err := os.Stat(path); err != nil {
@@ -211,6 +238,7 @@ func TestHTTPManagedWorkspaceLifecycle(t *testing.T) {
 		t.Fatalf("finish lost review history or status: %+v", state)
 	}
 	requireRemoved(t, path)
+	requireRemoved(t, review.Path)
 	state = verifyRound(t, h)
 	if state.Workspace.Path == path || state.Workspace.FinishedAt != "" || len(state.Comments) != comments {
 		t.Fatal("verification did not reopen completed review")

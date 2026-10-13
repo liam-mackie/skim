@@ -43,7 +43,7 @@ func TestStateRevisionPersistsAcrossRestartAndScopedCommits(t *testing.T) {
 	if state.Revision != 2 || state.Comments[0].Revision != 3 || state.Chats[0].Revision != 2 {
 		t.Fatalf("analysis re-versioned entities or omitted commit clock: %+v", state)
 	}
-	if _, err := s.UpdateSettings(s.Settings(), nil, func(*Record, domain.Settings) {}); err != nil {
+	if _, err := s.UpdateSettings(domain.SettingsUpdate{Settings: s.Settings()}, func(*Record, domain.Settings) {}); err != nil {
 		t.Fatal(err)
 	}
 	if s.State().Revision != 3 {

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -164,7 +166,7 @@ func modelFixture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	schemaName := ""
-	if strings.Contains(messages[0].Content, "Review this changed file") || strings.Contains(messages[0].Content, "Extract only concise, actionable") {
+	if strings.Contains(messages[0].Content, "Extract only concise, actionable") {
 		schemaName = "review_comments"
 	} else if strings.HasPrefix(messages[0].Content, "Task: group") {
 		schemaName = "review_groups"
@@ -178,13 +180,6 @@ func modelFixture(w http.ResponseWriter, r *http.Request) {
 	content := "The arithmetic implementation is in src/calc.go:2; related regression expectations changed in src/calc_test.go:2."
 	if strings.HasPrefix(messages[0].Content, "Derive concise") {
 		content = "Use concise, direct review comments. Ask specific questions and explain consequences. Suggest focused regression coverage."
-	} else if strings.Contains(messages[0].Content, "Review this changed file") {
-		var payload struct {
-			File domain.File `json:"file"`
-		}
-		_ = json.Unmarshal([]byte(messages[len(messages)-1].Content), &payload)
-		b, _ := json.Marshal(map[string]any{"comments": []any{map[string]any{"path": payload.File.Path, "startLine": 2, "endLine": 2, "side": "RIGHT", "body": "Could we preserve the original arithmetic result? The extra one changes every caller's result."}}})
-		content = string(b)
 	} else if strings.Contains(messages[0].Content, "Extract only concise, actionable") {
 		b, _ := json.Marshal(map[string]any{"comments": []any{map[string]any{
 			"path": "src/calc.go", "startLine": 2, "endLine": 2, "side": "RIGHT",
@@ -548,8 +543,8 @@ func TestReviewScopeAndStaleHead(t *testing.T) {
 	h.fixture.mu.Unlock()
 	h.request(t, "POST", "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/7"}, &state)
 	h.request(t, "POST", "/api/review", struct{}{}, &state)
-	if len(state.Comments) != 2 || state.ReviewRun == nil || len(state.ReviewRun.ReviewedPaths) != 2 || len(state.ReviewRun.SkippedFiles) != 2 {
-		t.Fatalf("incomplete-patch review scope missing: %+v", state.ReviewRun)
+	if len(state.Comments) != 2 || state.ReviewRun == nil || state.ReviewRun.HeadSHA != state.PullRequest.HeadSHA || state.ReviewRun.Error != "" {
+		t.Fatalf("review of available patches missing: %+v %+v", state.Comments, state.ReviewRun)
 	}
 	id := state.Comments[0].ID
 	h.fixture.mu.Lock()
@@ -594,6 +589,11 @@ func TestAmbiguousPublishReconcilesWithoutResend(t *testing.T) {
 }
 func TestHTTPBoundary(t *testing.T) {
 	h := newHarness(t)
+	specific := "specific"
+	valid, err := json.Marshal(domain.SettingsUpdate{Settings: h.app.Settings(), Style: &specific})
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name, host, origin, ctype, body string
 		status                          int
@@ -603,12 +603,12 @@ func TestHTTPBoundary(t *testing.T) {
 		{"null-origin", "", "null", "application/json", "{}", 403},
 		{"form-csrf", "", "", "text/plain", "{}", 415},
 		{"oversized", "", "", "application/json", `{"style":"` + strings.Repeat("x", 1<<20) + `"}`, 413},
-		{"trailing-json", "", "", "application/json", `{"style":"x"}{}`, 400},
-		{"trusted-vite", "", "http://localhost:5173", "application/json", `{"style":"specific"}`, 200},
+		{"trailing-json", "", "", "application/json", string(valid) + "{}", 400},
+		{"trusted-vite", "", "http://localhost:5173", "application/json", string(valid), 200},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req, _ := http.NewRequest("PUT", h.base+"/api/style", strings.NewReader(tc.body))
+			req, _ := http.NewRequest("PUT", h.base+"/api/settings", strings.NewReader(tc.body))
 			if tc.host != "" {
 				req.Host = tc.host
 			}
@@ -626,19 +626,90 @@ func TestHTTPBoundary(t *testing.T) {
 		})
 	}
 }
+
+// agentReview configures the fixture agent's review turn; call it before
+// starting operations. A non-empty reply replaces the default report (one
+// anchored comment per available patch), and hold makes the agent wait on a
+// permission request before replying.
+func (h *harness) agentReview(t *testing.T, reply string, hold bool) {
+	t.Helper()
+	settings := h.app.Settings()
+	settings.ACP.Args = []string{"-test.run=^TestHTTPAgentProcess$", "--", "skim-acp-fixture"}
+	if reply != "" {
+		path := filepath.Join(t.TempDir(), "review-reply")
+		if err := os.WriteFile(path, []byte(reply), 0600); err != nil {
+			t.Fatal(err)
+		}
+		settings.ACP.Args = append(settings.ACP.Args, "review-reply="+path)
+	}
+	if hold {
+		settings.ACP.Args = append(settings.ACP.Args, "review-hold")
+	}
+	if _, err := h.app.SetSettings(context.Background(), domain.SettingsUpdate{Settings: settings}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fixtureReviewReport comments on line 2 of every available patch listed in the
+// review prompt's trailing evidence JSON.
+func fixtureReviewReport(prompt string) string {
+	var evidence struct {
+		Files []struct {
+			Path        string `json:"path"`
+			PatchStatus string `json:"patchStatus"`
+		} `json:"files"`
+	}
+	_ = json.Unmarshal([]byte(prompt[strings.LastIndex(prompt, "\n")+1:]), &evidence)
+	comments := []map[string]any{}
+	for _, f := range evidence.Files {
+		if f.PatchStatus == "available" {
+			comments = append(comments, map[string]any{"path": f.Path, "startLine": 2, "endLine": 2, "side": "RIGHT", "body": "Could we preserve the original arithmetic result? The extra one changes every caller's result."})
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"comments": comments})
+	return "Inspected `git diff BASE HEAD` in the fixture checkout; no commands were run.\n\n```json\n" + string(b) + "\n```"
+}
+
+// TestHTTPAgentProcess is the fixture ACP agent, not a test. Verification
+// prompts request permission, then run `go test ./src` when allowed. Review
+// prompts reply with fixtureReviewReport, or the review-reply=<file> contents;
+// review-hold requests a permission first.
 func TestHTTPAgentProcess(t *testing.T) {
-	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "skim-acp-fixture" {
+	marker := slices.Index(os.Args, "skim-acp-fixture")
+	if marker < 0 {
 		return
+	}
+	reviewReply, hold := "", false
+	for _, option := range os.Args[marker+1:] {
+		if path, ok := strings.CutPrefix(option, "review-reply="); ok {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				os.Exit(2)
+			}
+			reviewReply = string(b)
+		}
+		hold = hold || option == "review-hold"
 	}
 	scan := bufio.NewScanner(os.Stdin)
 	scan.Buffer(make([]byte, 4096), 2<<20)
 	enc := json.NewEncoder(os.Stdout)
 	var promptID json.RawMessage
+	review := ""
+	answer := func(text string) {
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": "fixture-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": text}}}})
+		_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": promptID, "result": map[string]string{"stopReason": "end_turn"}})
+		promptID, review = nil, ""
+	}
 	for scan.Scan() {
 		var msg struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
 			Result json.RawMessage `json:"result"`
+			Params struct {
+				Prompt []struct {
+					Text string `json:"text"`
+				} `json:"prompt"`
+			} `json:"params"`
 		}
 		if json.Unmarshal(scan.Bytes(), &msg) != nil {
 			os.Exit(2)
@@ -651,11 +722,27 @@ func TestHTTPAgentProcess(t *testing.T) {
 			reply(map[string]string{"sessionId": "fixture-session"})
 		case "session/prompt":
 			promptID = msg.ID
+			if len(msg.Params.Prompt) == 1 && strings.Contains(msg.Params.Prompt[0].Text, "Review this pull request in the checked-out workspace") {
+				review = reviewReply
+				if review == "" {
+					review = fixtureReviewReport(msg.Params.Prompt[0].Text)
+				}
+				if !hold {
+					answer(review)
+					continue
+				}
+				_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": "permission-1", "method": "session/request_permission", "params": map[string]any{"sessionId": "fixture-session", "toolCall": map[string]any{"toolCallId": "review-diff", "title": "Inspect the pull-request diff"}, "options": []any{map[string]string{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}}}})
+				continue
+			}
 			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": "permission-1", "method": "session/request_permission", "params": map[string]any{"sessionId": "fixture-session", "toolCall": map[string]any{"toolCallId": "test-calc", "title": "Run focused arithmetic test", "rawInput": map[string]any{"command": "go", "args": []string{"test", "./src"}, "workingDirectory": "configured clean fixture workspace"}}, "options": []any{map[string]string{"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"}, map[string]string{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"}}}})
 		case "session/cancel":
 			os.Exit(0)
 		case "":
 			if len(promptID) == 0 {
+				continue
+			}
+			if review != "" {
+				answer(review)
 				continue
 			}
 			var result struct {
@@ -678,9 +765,7 @@ func TestHTTPAgentProcess(t *testing.T) {
 				}
 				text = fmt.Sprintf("Executed `go test ./src` in the configured clean fixture workspace.\nExit status: %d\n\n```text\n%s\n```\nThis is the actual command output; no additional checks were run.", exit, output)
 			}
-			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": "fixture-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": text}}}})
-			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": promptID, "result": map[string]string{"stopReason": "end_turn"}})
-			promptID = nil
+			answer(text)
 		}
 	}
 	os.Exit(0)

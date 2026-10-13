@@ -1,6 +1,6 @@
 # Skim
 
-Local-first pull-request review. Skim loads a GitHub PR, orders its changes into a guided read, flags the risky files, drafts comments you approve or discard, and sends a coding agent to verify the lines you select. Then it publishes your review to GitHub.
+Local-first pull-request review. Skim loads a GitHub PR, orders its changes into a guided read, flags the risky files, has a coding agent review the whole change in a checkout and draft comments you approve or discard, and lets you send the agent to check the lines you select. Then it publishes your review to GitHub.
 
 It runs on your machine as a local web app or a native desktop window, on macOS, Linux, and Windows.
 
@@ -9,8 +9,8 @@ It runs on your machine as a local web app or a native desktop window, on macOS,
 - **Review inbox** — open PRs that request your review or are assigned to you.
 - **Guide** — your review model splits the PR into units in reading order, each with a short summary.
 - **Risk badges** — optional [TypeSafe Jev](https://typesafe.ai) per-file impact ratings with the factors worth checking; test-only files can collapse automatically.
-- **Suggested comments** — AI review drafts comments and GitHub code suggestions. Nothing is published until you approve it.
-- **Agent verification** — select lines and ask an [ACP](https://agentclientprotocol.com) agent (Claude Code, Pi, …) to check them in an isolated worktree.
+- **Agent review** — an [ACP](https://agentclientprotocol.com) agent (Claude Code, Pi, …) reviews the whole PR in an isolated checkout and drafts comments and GitHub code suggestions. Nothing is published until you approve it.
+- **Agent checks** — select lines and ask the agent to check them in their own worktree.
 - **Chat, threads, progress** — PR-wide chat, existing GitHub discussions and replies, and per-file Reviewed marks.
 
 ## Install
@@ -26,9 +26,9 @@ make build
 
 ## Getting started
 
-1. Export a GitHub token as `GITHUB_TOKEN`. Public PRs load without one; the inbox, private PRs, and publishing need it (fine-grained: contents read, pull requests read/write).
+1. In **Settings → GitHub**, paste a GitHub token (or export `GITHUB_TOKEN`; a saved token wins). Public PRs load without one; the inbox, private PRs, and publishing need it (fine-grained: contents read, pull requests read/write).
 2. In **Settings**, add a provider: any OpenAI-compatible endpoint for the Chat and Review roles, and optionally TypeSafe for Jev. Keys are saved locally and never sent back to the browser.
-3. Optionally pick an ACP agent preset. Install and log in to the agent yourself first:
+3. Pick an ACP agent preset in **Settings → Agent**; agent reviews and checks need one. Install and log in to the agent yourself first:
 
    | Agent | Install |
    | --- | --- |
@@ -37,7 +37,7 @@ make build
 
 4. Paste a PR URL or pick one from the inbox.
 
-The desktop app imports your login shell's environment when launched from Finder or the Dock, so `GITHUB_TOKEN` and your `PATH` work as they do in a terminal.
+The desktop app imports your login shell's environment when launched from Finder or the Dock, so `PATH` and environment tokens work as they do in a terminal.
 
 ## Privacy and safety
 

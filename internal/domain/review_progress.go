@@ -7,20 +7,18 @@ type ReviewProgressUpdate struct {
 	Run *ReviewProgress `json:"run"`
 }
 
-// ReviewProgress counts validated prospective findings; drafts are saved only
-// when the entire review succeeds, so running or failed findings are not drafts.
+// ReviewProgress tracks one agent review. Phase is preparing (checkout),
+// reviewing (agent running), saving (validating its comments) or finished.
+// Findings counts validated suggestions once the agent has replied; drafts are
+// saved only when the review succeeds.
 type ReviewProgress struct {
-	ID          string `json:"id"`
-	Status      string `json:"status"`
-	Phase       string `json:"phase"`
-	CurrentPath string `json:"currentPath,omitempty"`
-	Completed   int    `json:"completed"`
-	Total       int    `json:"total"`
-	Reviewed    int    `json:"reviewed"`
-	Skipped     int    `json:"skipped"`
-	Findings    int    `json:"findings"`
-	StartedAt   string `json:"startedAt"`
-	UpdatedAt   string `json:"updatedAt"`
-	FinishedAt  string `json:"finishedAt,omitempty"`
-	Error       string `json:"error,omitempty"`
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	Phase      string `json:"phase"`
+	Findings   int    `json:"findings"`
+	Rejected   int    `json:"rejected"`
+	StartedAt  string `json:"startedAt"`
+	UpdatedAt  string `json:"updatedAt"`
+	FinishedAt string `json:"finishedAt,omitempty"`
+	Error      string `json:"error,omitempty"`
 }

@@ -28,9 +28,88 @@ func credentialStoreFixture(t *testing.T) (*Store, string) {
 
 func saveCredentialSettings(t *testing.T, s *Store, settings domain.Settings, updates ...domain.ProviderKeyUpdate) {
 	t.Helper()
-	committed, err := s.UpdateSettings(settings, updates, func(*Record, domain.Settings) {})
+	committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings, ProviderKeys: updates}, func(*Record, domain.Settings) {})
 	if err != nil || !committed {
 		t.Fatalf("settings transaction: committed=%v err=%v", committed, err)
+	}
+}
+
+func TestSavedGitHubTokenOverridesEnvironmentAndStaysPrivate(t *testing.T) {
+	t.Setenv("SKIM_STORE_GITHUB_TEST", "environment-github-token")
+	dir := t.TempDir()
+	s, err := Open(dir, domain.Settings{GitHubTokenEnv: "SKIM_STORE_GITHUB_TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	save := func(update domain.GitHubTokenUpdate) error {
+		_, err := s.UpdateSettings(domain.SettingsUpdate{Settings: s.Settings(), GitHubToken: update}, func(*Record, domain.Settings) {})
+		return err
+	}
+	if s.GitHubToken() != "environment-github-token" || s.Settings().GitHubTokenStatus != "environment" {
+		t.Fatal("environment token not used before a token is saved")
+	}
+	if err := save(domain.GitHubTokenUpdate{Token: "  saved-github-token  "}); err != nil {
+		t.Fatal(err)
+	}
+	if s.GitHubToken() != "saved-github-token" || s.Settings().GitHubTokenStatus != "saved" {
+		t.Fatal("saved token did not take precedence over the environment")
+	}
+	if err := save(domain.GitHubTokenUpdate{Token: " \t "}); err != nil || s.GitHubToken() != "saved-github-token" {
+		t.Fatalf("blank update changed the saved token: %v", err)
+	}
+	public, _ := json.Marshal(s.Settings())
+	if strings.Contains(string(public), "saved-github-token") {
+		t.Fatal("public settings exposed the saved token")
+	}
+	if !strings.Contains(s.Redact("GitHub said saved-github-token"), "[redacted]") {
+		t.Fatal("saved token not redacted from diagnostics")
+	}
+	for _, invalid := range []domain.GitHubTokenUpdate{{Token: "x", Remove: true}, {Token: "two\nlines"}} {
+		if err := save(invalid); err == nil || s.GitHubToken() != "saved-github-token" {
+			t.Fatalf("invalid update %+v was accepted", invalid)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = Open(dir, domain.Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	if s.GitHubToken() != "saved-github-token" {
+		t.Fatal("saved token did not survive restart")
+	}
+	if err := save(domain.GitHubTokenUpdate{Remove: true}); err != nil {
+		t.Fatal(err)
+	}
+	if s.GitHubToken() != "environment-github-token" || s.Settings().GitHubTokenStatus != "environment" {
+		t.Fatal("removal did not fall back to the environment token")
+	}
+	t.Setenv("SKIM_STORE_GITHUB_TEST", "")
+	if s.GitHubToken() != "" || s.Settings().GitHubTokenStatus != "missing" {
+		t.Fatal("no token reported as available")
+	}
+}
+
+func TestSettingsSaveCommitsStyleAtomically(t *testing.T) {
+	s, _ := credentialStoreFixture(t)
+	style := "Be brief."
+	settings := s.Settings()
+	settings.ACP.Command = "agent"
+	if _, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings, Style: &style}, func(*Record, domain.Settings) {}); err != nil {
+		t.Fatal(err)
+	}
+	if s.State().Style != style || s.Settings().ACP.Command != "agent" {
+		t.Fatal("style and settings were not saved together")
+	}
+	if _, err := s.UpdateSettings(domain.SettingsUpdate{Settings: s.Settings()}, func(*Record, domain.Settings) {}); err != nil || s.State().Style != style {
+		t.Fatalf("omitted style changed the saved style: %v", err)
+	}
+	before := s.Snapshot()
+	oversized := strings.Repeat("x", 32001)
+	settings.ACP.Command = "other"
+	if _, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings, Style: &oversized}, func(*Record, domain.Settings) {}); err == nil || !reflect.DeepEqual(s.Snapshot(), before) {
+		t.Fatal("oversized style was not rejected with the whole save")
 	}
 }
 
@@ -40,9 +119,6 @@ func TestCredentialsPersistPrivatelyAndReopen(t *testing.T) {
 	before := s.Settings()
 	if before.Providers[0].CredentialStatus != "saved" || before.Providers[0].CredentialRevision == "" {
 		t.Fatal("saved credential lacks status or revision")
-	}
-	if before.CredentialStoragePath != filepath.Join(dir, "state.json") {
-		t.Fatalf("incorrect credential storage path: %q", before.CredentialStoragePath)
 	}
 	for path, mode := range map[string]os.FileMode{dir: 0700, filepath.Join(dir, "state.json"): 0600} {
 		info, err := os.Stat(path)
@@ -158,7 +234,7 @@ func TestCredentialsRejectStaleSnapshotsAndDestinationChanges(t *testing.T) {
 				t.Fatal("credential resolved for a different destination")
 			}
 			before := s.Snapshot()
-			committed, err := s.UpdateSettings(settings, nil, func(*Record, domain.Settings) {})
+			committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings}, func(*Record, domain.Settings) {})
 			if committed || err == nil || !reflect.DeepEqual(s.Snapshot(), before) {
 				t.Fatal("destination change without explicit key decision was not rejected atomically")
 			}
@@ -210,7 +286,7 @@ func TestCredentialsFailedPersistLeavesSettingsKeysAndAnalysisUnchanged(t *testi
 	settings := s.Settings()
 	settings.Providers[0].BaseURL = "https://replacement.invalid/v1"
 	prepared := false
-	committed, err := s.UpdateSettings(settings, []domain.ProviderKeyUpdate{{ProviderID: "first", APIKey: "replacement-key"}}, func(r *Record, settings domain.Settings) {
+	committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: settings, ProviderKeys: []domain.ProviderKeyUpdate{{ProviderID: "first", APIKey: "replacement-key"}}}, func(r *Record, settings domain.Settings) {
 		prepared = true
 		r.State.Analysis.Generation = "replacement"
 		if settings.Providers[0].CredentialStatus != "saved" {
@@ -249,7 +325,7 @@ func TestCredentialsInvalidUpdatesAreAtomic(t *testing.T) {
 		{"oversized", []domain.ProviderKeyUpdate{{ProviderID: "first", APIKey: strings.Repeat("x", 8193)}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			committed, err := s.UpdateSettings(s.Settings(), tc.updates, func(*Record, domain.Settings) {
+			committed, err := s.UpdateSettings(domain.SettingsUpdate{Settings: s.Settings(), ProviderKeys: tc.updates}, func(*Record, domain.Settings) {
 				t.Error("invalid credential transaction reached analysis preparation")
 			})
 			if committed || err == nil || !reflect.DeepEqual(s.Snapshot(), before) {

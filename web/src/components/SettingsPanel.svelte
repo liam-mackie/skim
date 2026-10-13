@@ -16,7 +16,6 @@
   import Save from '@lucide/svelte/icons/save';
   import Download from '@lucide/svelte/icons/download';
   import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-  import KeyRound from '@lucide/svelte/icons/key-round';
   import ShieldAlert from '@lucide/svelte/icons/shield-alert';
   let providerViewport: HTMLDivElement | undefined = $state();
   let providerViewportWidth = $state(0);
@@ -26,7 +25,7 @@
   let activeSection = $state('settings-providers');
   const settingsSections = [
     ['settings-providers', 'AI providers'], ['settings-models', 'Model roles'], ['settings-github', 'GitHub'],
-    ['settings-agent', 'Verification agent'], ['settings-style', 'Writing style'],
+    ['settings-agent', 'Agent'], ['settings-style', 'Writing style'],
   ] as const;
   $effect(() => {
     const layout = settingsLayout;
@@ -73,7 +72,10 @@
   // Password drafts are deliberately separate from Settings and its serialized snapshots.
   let keyInputs = $state<Record<string, string>>({});
   let removeKeys = $state<Record<string, boolean>>({});
+  let githubTokenInput = $state('');
+  let removeGithubToken = $state(false);
   let providerNotice = $state('');
+  const githubStatus = $derived(store.state?.settings.githubTokenStatus ?? 'missing');
 
   type AcpMode = 'claude' | 'pi' | 'custom';
   type Link = { href: string; text: string };
@@ -145,7 +147,7 @@
 
   const roles = [
     ['chat', 'Chat', 'openai', 'Global PR chat'],
-    ['review', 'Review', 'openai', 'Agent review, writing-style import, review units, and the factors behind flagged risk'],
+    ['review', 'Review', 'openai', 'Writing-style import, review units, the factors behind flagged risk, and suggestions from agent checks'],
     ['jev', 'Jev', 'typesafe', 'Optional. Per-file risk labels and test-only collapsing; leave unset to turn risk off'],
   ] as const;
   const kindOf = (k?: ProviderKind) => k ?? 'openai';
@@ -154,7 +156,7 @@
     const out: string[] = [];
     const s = store.state?.settings;
     if (!s) return out;
-    if (!s.githubTokenEnv) out.push('GitHub token environment variable name is not set; private PRs, style import and publishing need it (public PRs can load without).');
+    if (s.githubTokenStatus === 'missing') out.push('No GitHub token: the inbox, private PRs, style import and publishing need one (public PRs load without).');
     if (!s.providers.length) out.push('No AI providers are configured.');
     for (const [id, label, want] of roles) {
       const r = s.roles[id];
@@ -165,8 +167,8 @@
         else if (kindOf(p.kind) !== want) out.push(`${label} role needs a ${want === 'typesafe' ? 'TypeSafe' : 'OpenAI-compatible'} provider.`);
       }
     }
-    if (!s.acp.command) out.push('ACP agent command is not set; verification is unavailable.');
-        return out;
+    if (!s.acp.command) out.push('ACP agent command is not set; agent reviews and checks are unavailable.');
+    return out;
   });
 
   function newId(): string {
@@ -324,18 +326,22 @@
     }
     argsError = null;
     const { argsText: _t, ...rest } = $state.snapshot(draft);
-    const updates: ProviderKeyUpdate[] = [];
+    const providerKeys: ProviderKeyUpdate[] = [];
     for (const p of rest.providers) {
       const key = keyInputs[p.id]?.trim();
-      if (key) updates.push({ providerId: p.id, apiKey: key });
-      else if (removeKeys[p.id]) updates.push({ providerId: p.id, remove: true });
+      if (key) providerKeys.push({ providerId: p.id, apiKey: key });
+      else if (removeKeys[p.id]) providerKeys.push({ providerId: p.id, remove: true });
     }
-    if (await store.saveSettings({ ...rest, acp: { ...rest.acp, args: args as string[] } }, updates)) {
-      for (const update of updates) {
+    const githubToken = githubTokenInput.trim() ? { token: githubTokenInput.trim() } : removeGithubToken ? { remove: true } : {};
+    const style = styleText !== store.state?.style ? styleText : undefined;
+    if (await store.saveSettings({ ...rest, acp: { ...rest.acp, args: args as string[] } }, { providerKeys, githubToken, style })) {
+      for (const update of providerKeys) {
         delete keyInputs[update.providerId];
         delete removeKeys[update.providerId];
       }
-      providerNotice = 'Provider settings saved. Keys stay on this machine and are never returned to the browser.';
+      githubTokenInput = '';
+      removeGithubToken = false;
+      providerNotice = 'Settings saved. Keys and tokens stay on this machine and are never returned to the browser.';
     }
   }
 
@@ -391,11 +397,6 @@
         <h2 id="providers-heading">AI providers</h2>
         <Button size="sm" onclick={startAdd} disabled={store.busy.settings || !!editor}><Plus class="size-4" aria-hidden="true" />Add provider</Button>
       </div>
-      <details class="credential-storage">
-        <summary><KeyRound class="mr-1 inline size-3.5" aria-hidden="true" />API keys: plain-text storage</summary>
-        <p>Keys are saved on the Skim server in plain text, protected by file permissions (0600 file, 0700 directory), not encryption or an OS keychain. Protect the file and its backups.</p>
-        {#if draft.credentialStoragePath}<code>{draft.credentialStoragePath}</code>{/if}
-      </details>
       {#if providerNotice}<p class="hint" role="status">{providerNotice}</p>{/if}
 
       {#if editor}
@@ -530,17 +531,31 @@
     <section id="settings-github">
       <h2>GitHub</h2>
       <div class="field">
-        <label for="gh">Token environment variable name</label>
-        <Input id="gh" class="w-full" bind:value={draft.githubTokenEnv} placeholder="GITHUB_TOKEN" aria-describedby="gh-h" />
-        <p class="hint" id="gh-h">Name only. The server reads the token from its environment.</p>
+        <label for="gh-token">{githubStatus === 'saved' ? 'Replace token' : 'Personal access token'}</label>
+        <Input id="gh-token" class="w-full" type="password" bind:value={githubTokenInput} oninput={(e) => { if (e.currentTarget.value.trim()) removeGithubToken = false; }} autocomplete="new-password" spellcheck="false" autocapitalize="none" placeholder={githubStatus === 'saved' ? 'Token saved — leave blank to keep' : 'Paste a GitHub token'} aria-describedby="gh-token-h" />
+        <p class="hint" id="gh-token-h">{githubStatus === 'saved' ? 'Blank keeps the saved token.' : githubStatus === 'environment' ? `Using ${draft.githubTokenEnv} from the environment. A saved token overrides it.` : 'Needed for the inbox, private PRs, replies and publishing. Fine-grained tokens need Contents read and Pull requests read/write.'}</p>
       </div>
+      {#if githubStatus === 'saved'}
+        <div class="provider-actions">
+          <Button size="sm" variant="outline" class="text-destructive hover:text-destructive" aria-pressed={removeGithubToken} onclick={() => { removeGithubToken = !removeGithubToken; if (removeGithubToken) githubTokenInput = ''; }}><Trash2 class="size-3.5" aria-hidden="true" />{removeGithubToken ? 'Keep saved token' : 'Remove saved token'}</Button>
+        </div>
+        {#if removeGithubToken}<p class="hint" role="status">The saved token will be removed when you save settings.{draft.githubTokenEnv ? ` Afterwards ${draft.githubTokenEnv} is used if it is set.` : ''}</p>{/if}
+      {/if}
+      <details class="text-xs text-muted-foreground">
+        <summary>Environment variable</summary>
+        <div class="field mt-2">
+          <label for="gh">Token environment variable (optional)</label>
+          <Input id="gh" class="w-full" bind:value={draft.githubTokenEnv} placeholder="GITHUB_TOKEN" aria-describedby="gh-h" />
+          <p class="hint" id="gh-h">Used only without a saved token. Restart Skim after changing its environment.</p>
+        </div>
+      </details>
     </section>
 
     <section id="settings-agent">
-      <h2>Verification agent (ACP)</h2>
+      <h2>Agent (ACP)</h2>
       <div class="warn flex items-start gap-2">
         <ShieldAlert class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-        <p>The local agent can read files and run tools in a prepared PR checkout. It is <strong>not sandboxed</strong>: use a trusted agent and review permission requests. Your own checkouts are untouched.</p>
+        <p>The local agent runs agent reviews and selected-line checks: it can read files and run tools in a prepared PR checkout. It is <strong>not sandboxed</strong>: use a trusted agent and review permission requests. Your own checkouts are untouched.</p>
       </div>
       <div class="field">
         <label for="apreset">Agent</label>
@@ -583,6 +598,29 @@
       {/if}
     </section>
 
+    <section id="settings-style">
+      <h2>Writing style</h2>
+      <div class="field">
+        <label for="imp">Import from repository (optional)</label>
+        <Input id="imp" class="w-full" bind:value={importRepo} placeholder={store.pr ? `${store.pr.owner}/${store.pr.repo}` : 'owner/repo'} disabled={store.busy.style} aria-describedby="imp-h" />
+        <p class="hint" id="imp-h">owner/repo; blank uses the loaded PR. Importing saves the result immediately.</p>
+      </div>
+      <Button variant="outline" aria-label={store.busy.style ? 'Working…' : 'Import from my review comments'} onclick={importStyle} disabled={!!store.blockReason('style') || (!store.pr && !importRepo.trim())}>
+        {#if store.busy.style}<LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />Working…{:else}<Download class="size-4" aria-hidden="true" />Import{/if}
+      </Button>
+      <details class="mt-3 text-xs text-muted-foreground">
+        <summary>Import help</summary>
+        <p class="mt-2">The review model learns writing guidance from your GitHub review comments. You can edit the result or write your own.</p>
+      </details>
+      {#if importError}<div class="error" role="alert">{importError}</div>{/if}
+      {#if store.errors.style}<div class="error" role="alert">{store.errors.style}</div>{/if}
+      {#if store.blockReason('style')}<p class="hint" role="status">{store.blockReason('style')}</p>{/if}
+      <div class="field mt-3">
+        <label for="style">Guidance</label>
+        <Textarea id="style" class="min-h-40 w-full" rows={8} bind:value={styleText} disabled={store.busy.style} placeholder="No writing style yet." />
+      </div>
+    </section>
+
     <div class="savebar">
       {#if store.errors.settings}<div class="error" role="alert">{store.errors.settings}</div>{/if}
       {#if store.blockReason('settings')}<span class="hint" role="status">{store.blockReason('settings')} Unsaved settings are kept.</span>{/if}
@@ -591,30 +629,6 @@
       </Button>
     </div>
   </form>
-  <section id="settings-style">
-    <h2>Writing style</h2>
-    <p class="hint">Saved separately.</p>
-    <div class="field">
-      <label for="imp">Import from repository (optional)</label>
-      <Input id="imp" class="w-full" bind:value={importRepo} placeholder={store.pr ? `${store.pr.owner}/${store.pr.repo}` : 'owner/repo'} disabled={store.busy.style} aria-describedby="imp-h" />
-      <p class="hint" id="imp-h">owner/repo; blank uses the loaded PR.</p>
-    </div>
-    <Button variant="outline" aria-label={store.busy.style ? 'Working…' : 'Import from my review comments'} onclick={importStyle} disabled={!!store.blockReason('style') || (!store.pr && !importRepo.trim())}>
-      {#if store.busy.style}<LoaderCircle class="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />Working…{:else}<Download class="size-4" aria-hidden="true" />Import{/if}
-    </Button>
-    <details class="mt-3 text-xs text-muted-foreground">
-      <summary>Import help</summary>
-      <p class="mt-2">The review model learns writing guidance from your GitHub review comments. You can edit the result or write your own.</p>
-    </details>
-    {#if importError}<div class="error" role="alert">{importError}</div>{/if}
-    {#if store.errors.style}<div class="error" role="alert">{store.errors.style}</div>{/if}
-    {#if store.blockReason('style')}<p class="hint" role="status">{store.blockReason('style')} Unsaved style text is kept.</p>{/if}
-    <form onsubmit={(e) => { e.preventDefault(); void store.saveStyle(styleText); }}>
-      <label class="text-sm font-medium" for="style">Writing style</label>
-      <Textarea id="style" class="min-h-40 w-full" rows={8} bind:value={styleText} disabled={store.busy.style} placeholder="No writing style yet." />
-      <Button class="justify-self-start" type="submit" disabled={!!store.blockReason('style') || styleText === store.state?.style}><Save class="size-4" aria-hidden="true" />Save style</Button>
-    </form>
-  </section>
   </div>
   </div>
 {/if}
@@ -643,9 +657,6 @@
   table.providers .row-actions { white-space: nowrap; }
   .pending { display: block; margin-top: 4px; color: var(--warn-fg); font-size: 11px; font-weight: 400; }
   .protocol { display: inline-block; min-width: 110px; color: var(--fg-muted); font-size: 12px; }
-  .credential-storage { color: var(--fg-muted); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 16px; font-size: 12px; }
-  .credential-storage summary { font-weight: 500; }
-  .credential-storage p { margin: 10px 0; }
   .section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
   .section-head h2 { margin: 0; }
   .provider-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
@@ -658,7 +669,6 @@
   .preset ol { margin: 8px 0; padding-left: 20px; }
   code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
   ul { margin: 4px 0 0; padding-left: 18px; }
-  #settings-style form { display: grid; gap: 12px; margin-top: 20px; }
   .savebar { position: sticky; bottom: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin: 0 0 20px; box-shadow: var(--shadow); }
   .savebar > .hint { margin: 0; }
   .savebar :global(.error) { flex-basis: 100%; margin: 0; max-height: 30vh; overflow: auto; }

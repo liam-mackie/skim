@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -101,7 +100,7 @@ func (a *App) Verify(ctx context.Context, v Verification) (domain.VerificationAc
 	}
 	a.verifications[job.ID] = run
 	a.jobs.Add(1)
-	go a.runVerification(run, r, t, d.Style, a.Provider(d.Settings), os.Getenv(d.Settings.GitHubTokenEnv))
+	go a.runVerification(run, r, t, d.Style, a.Provider(d.Settings), a.Store.GitHubToken())
 	acceptedThread := t
 	acceptedThread.Messages = append([]domain.Message(nil), t.Messages...)
 	acceptedJob := job
@@ -186,6 +185,39 @@ func (a *App) CancelVerification(ctx context.Context, id string, identity domain
 		return *job, nil
 	}
 	return domain.VerificationJob{}, errors.New("verification job not found for this PR")
+}
+
+// ClearVerificationActivity hides every finished job from Activity. Running
+// jobs stay; threads, reports and suggestions are untouched.
+func (a *App) ClearVerificationActivity(ctx context.Context) ([]domain.VerificationJob, error) {
+	if err := a.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer a.unlock()
+	d := a.Store.Snapshot()
+	cleared := []domain.VerificationJob{}
+	for key, r := range d.Reviews {
+		changed := false
+		for i := range r.State.Chats {
+			t := &r.State.Chats[i]
+			if job := t.Verification; job != nil && !job.Active() && !job.Cleared {
+				job.Cleared = true
+				t.Revision++
+				job.Revision = t.Revision
+				cleared = append(cleared, *job)
+				changed = true
+			}
+		}
+		if changed {
+			d.Reviews[key] = r
+		}
+	}
+	if len(cleared) != 0 {
+		if err := a.Store.Commit(d); err != nil {
+			return nil, err
+		}
+	}
+	return cleared, nil
 }
 
 // updateVerification always merges into the latest saved thread under the gate.

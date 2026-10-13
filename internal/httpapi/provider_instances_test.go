@@ -122,15 +122,6 @@ func TestHTTPNamedProvidersStructuredConsumerWorkflow(t *testing.T) {
 	if settings.Roles != roles || !reflect.DeepEqual(before.Analysis, after.Analysis) || !reflect.DeepEqual(before.Groups, after.Groups) || !reflect.DeepEqual(before.Files, after.Files) || len(peer.calls()) != calls || h.app.Settings().Providers[0].CredentialRevision != revision {
 		t.Fatal("cosmetic rename changed roles, credential identity, generation or cached analysis")
 	}
-	h.request(t, http.MethodPost, "/api/review", map[string]any{}, &state)
-	if len(state.Comments) != 2 || state.ReviewRun == nil || len(state.ReviewRun.ReviewedPaths) != 2 {
-		t.Fatal("strict-schema manual review did not persist anchored drafts")
-	}
-	for _, comment := range state.Comments {
-		if comment.Status != "suggested" || comment.Source != "review" || comment.StartLine != 2 || comment.Side != "RIGHT" {
-			t.Fatalf("invalid review draft: %+v", comment)
-		}
-	}
 	var chat domain.ChatThread
 	h.request(t, http.MethodPost, "/api/chat", map[string]string{"message": "Explain these changes"}, &chat)
 	if len(chat.Messages) != 2 {

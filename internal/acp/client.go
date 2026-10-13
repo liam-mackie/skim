@@ -50,7 +50,7 @@ type turn struct {
 func ValidateInvocation(settings domain.ACPSettings) error {
 	command := strings.TrimSpace(settings.Command)
 	if command == "" {
-		return errors.New("configure an ACP agent command and arguments before verification")
+		return errors.New("configure an ACP agent command and arguments in Settings before agent reviews or checks")
 	}
 	// A relative path containing a separator resolves against the checkout at start
 	// time. Windows accepts '/' as well as filepath.Separator.
@@ -62,21 +62,20 @@ func ValidateInvocation(settings domain.ACPSettings) error {
 	return nil
 }
 
-// Run verifies one prompt. onStart, if not nil, is called with the agent's process
+// Run sends one prompt and returns the agent's text. The caller bounds the run
+// with ctx's deadline. onStart, if not nil, is called with the agent's process
 // group right after the process starts and before any protocol message is sent; its
 // failure kills and drains the agent before Run returns. Run returns only after the
 // whole process group has stopped.
 func (c *Client) Run(ctx context.Context, settings domain.ACPSettings, directory, headSHA, prompt string, scope PermissionScope, onStart func(group int) error) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, runTimeout)
-	defer cancel()
 	if err := ValidateInvocation(settings); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(prompt) == "" {
-		return "", errors.New("ACP verification prompt must not be empty")
+		return "", errors.New("ACP prompt must not be empty")
 	}
 	if len(prompt) > maxPromptBytes {
-		return "", errors.New("ACP verification prompt exceeds the 2 MiB input limit")
+		return "", errors.New("ACP prompt exceeds the 2 MiB input limit")
 	}
 	if err := verifyWorkspace(ctx, directory, headSHA); err != nil {
 		return "", fmt.Errorf("ACP workspace verification failed: %w", err)

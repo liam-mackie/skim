@@ -22,7 +22,7 @@ func TestSnapshotsAndCommitDoNotAlias(t *testing.T) {
 	state.Files = []domain.File{{Path: "file", Risk: &domain.Risk{Level: "low"}}}
 	state.Groups = []domain.Group{{Paths: []string{"file"}}}
 	state.Chats = []domain.ChatThread{{Messages: []domain.Message{{Content: "message"}}}}
-	state.ReviewRun = &domain.ReviewRun{ReviewedPaths: []string{"file"}}
+	state.ReviewRun = &domain.ReviewRun{Rejected: []domain.RejectedComment{{Path: "file"}}}
 	state.Analysis = &domain.Analysis{Key: "key", Generation: "run", Revision: 1, Risk: domain.AnalysisTask{Status: "complete", SkippedFiles: []domain.SkippedFile{{Path: "unavailable"}}}}
 	d.Active = "key"
 	d.Reviews["key"] = Record{State: state, Pending: &Publication{CommentIDs: []string{"comment"}}}
@@ -36,7 +36,7 @@ func TestSnapshotsAndCommitDoNotAlias(t *testing.T) {
 	snapshot.Reviews["key"].State.PullRequest.HeadSHA = "changed"
 	snapshot.Reviews["key"].State.Groups[0].Paths[0] = "changed"
 	snapshot.Reviews["key"].State.Chats[0].Messages[0].Content = "changed"
-	snapshot.Reviews["key"].State.ReviewRun.ReviewedPaths[0] = "changed"
+	snapshot.Reviews["key"].State.ReviewRun.Rejected[0].Path = "changed"
 	snapshot.Reviews["key"].State.Analysis.Risk.SkippedFiles[0].Path = "changed"
 	update := s.Analysis()
 	update.Analysis.Generation = "changed"
@@ -49,7 +49,7 @@ func TestSnapshotsAndCommitDoNotAlias(t *testing.T) {
 	active.Files[0].Path = "changed"
 	fresh := s.Snapshot()
 	r := fresh.Reviews["key"]
-	if r.State.PullRequest.HeadSHA != "head" || r.State.Files[0].Risk.Level != "low" || r.State.Groups[0].Paths[0] != "file" || r.State.Chats[0].Messages[0].Content != "message" || r.State.ReviewRun.ReviewedPaths[0] != "file" || r.Pending.CommentIDs[0] != "comment" || fresh.Settings.Providers[0].ID != "provider" || fresh.Settings.ACP.Args[0] != "arg" {
+	if r.State.PullRequest.HeadSHA != "head" || r.State.Files[0].Risk.Level != "low" || r.State.Groups[0].Paths[0] != "file" || r.State.Chats[0].Messages[0].Content != "message" || r.State.ReviewRun.Rejected[0].Path != "file" || r.Pending.CommentIDs[0] != "comment" || fresh.Settings.Providers[0].ID != "provider" || fresh.Settings.ACP.Args[0] != "arg" {
 		t.Fatal("snapshot/commit shared mutable storage")
 	}
 	if r.State.Analysis.Generation != "run" || r.State.Analysis.Risk.SkippedFiles[0].Path != "unavailable" {

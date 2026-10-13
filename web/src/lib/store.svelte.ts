@@ -10,7 +10,7 @@ import {
   type ReviewComment,
   type ReviewEvent,
   type Settings,
-  type ProviderKeyUpdate,
+  type SettingsSave,
   type CommitList,
   type ReviewInbox,
   type Workspace,
@@ -65,6 +65,8 @@ export class Store {
   verificationPollingError = $state<string | null>(null);
   verificationCancelling = $state<Record<string, boolean>>({});
   activityOpen = $state(false);
+  activityClearing = $state(false);
+  activityClearError = $state<string | null>(null);
   lastAcceptedJobId = $state<string | null>(null);
   #answeredPermissions = new Set<string>();
   #verificationAbort: AbortController | null = null;
@@ -530,6 +532,19 @@ export class Store {
       this.verificationCancelling[jobId] = false;
     }
   }
+  async clearActivity() {
+    if (this.activityClearing) return;
+    this.activityClearing = true;
+    this.activityClearError = null;
+    try {
+      const { jobs } = await api.clearVerificationActivity();
+      this.verificationJobs = mergeVerificationJobs(this.verificationJobs, jobs);
+    } catch (e) {
+      this.activityClearError = `Cannot clear activity: ${errorMessage(e)}`;
+    } finally {
+      this.activityClearing = false;
+    }
+  }
   /** Explicit user intent is the only path from global activity to a different review/thread. */
   async openVerification(jobId: string) {
     const job = this.verificationJobs.find((item) => item.id === jobId);
@@ -949,6 +964,11 @@ export class Store {
       finally { await this.refreshReviewProgress(); }
     });
     if (s && this.#apply(s, request)) this.notice = 'Agent review finished. Suggested comments are available in Review comments.';
+    // A review that fails after the agent replied still saves its report.
+    if (!s && this.#current(request)) {
+      const saved = await api.state().catch(() => undefined);
+      if (saved) this.#apply(saved, request);
+    }
   }
 
   async patchComment(id: string, patch: { body?: string; status?: 'pending' }) {
@@ -1068,22 +1088,13 @@ export class Store {
     }
     return this.#current(request) ? r : undefined;
   }
-  async saveStyle(style: string) {
+  async saveSettings(s: Settings, save: SettingsSave = {}) {
     const request = this.#capture();
-    const r = await this.#run('style', () => api.saveStyle(style));
-    if (r && this.#current(request) && this.state) {
-      this.#metadataVersion++;
-      this.state.style = r.style;
-      this.notice = 'Writing style saved.';
-    }
-    return !!r && this.#current(request);
-  }
-  async saveSettings(s: Settings, providerKeys: ProviderKeyUpdate[] = []) {
-    const request = this.#capture();
-    const r = await this.#run('settings', () => api.saveSettings(s, providerKeys));
+    const r = await this.#run('settings', () => api.saveSettings(s, save));
     if (r && this.#current(request) && this.state) {
       this.#metadataVersion++;
       this.state.settings = r;
+      if (save.style !== undefined) this.state.style = save.style;
       this.notice = 'Settings saved.';
       await this.#reacquireAnalysis();
     }

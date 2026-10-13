@@ -68,7 +68,7 @@
       </div>
       <div class="flex shrink-0 flex-wrap items-center gap-2">
         <IconButton label="Re-run analysis" text="Analyze" tooltip={store.blockReason('refresh') ?? 'Re-run analysis'} variant="outline" onclick={() => store.refreshAnalysis()} disabled={!!store.blockReason('refresh')}><RefreshCw class={store.analysisRefreshing ? 'motion-safe:animate-spin' : ''} /></IconButton>
-        <Button variant="outline" onclick={() => store.review()} disabled={!!store.blockReason('review')} title={store.blockReason('review') ?? 'Generate suggested comments'}><Sparkles />{store.busy.review ? 'Reviewing…' : 'AI review'}</Button>
+        <Button variant="outline" onclick={() => store.review()} disabled={!!store.blockReason('review')} title={store.blockReason('review') ?? 'Have the ACP agent review the whole pull request in a checkout'}><Sparkles />{store.busy.review ? 'Reviewing…' : 'Agent review'}</Button>
         <Button onclick={() => store.openFinishReview()}><Check /> Finish review</Button>
       </div>
     </div>

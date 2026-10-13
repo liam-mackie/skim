@@ -24,7 +24,7 @@ func TestCommentLifecycleMigrationPersistsWithoutLosingCredentialsOrPublication(
 		}
 	}()
 	d := s.Snapshot()
-	if err := d.ApplySettings(settings, []domain.ProviderKeyUpdate{{ProviderID: "account", APIKey: "preserve-private-key"}}); err != nil {
+	if err := d.ApplySettings(domain.SettingsUpdate{Settings: settings, ProviderKeys: []domain.ProviderKeyUpdate{{ProviderID: "account", APIKey: "preserve-private-key"}}}); err != nil {
 		t.Fatal(err)
 	}
 	d.Active = "github/owner/repo/1"

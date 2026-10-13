@@ -161,7 +161,8 @@ func TestReplyReleasesGateAndReturnsSuccessWithoutPersistenceOrRead(t *testing.T
 		if !identity.Matches(&pr) || id != "123" || text != body || len(a.gate) != 0 {
 			t.Fatalf("reply held gate or changed request: %+v id=%s body=%q gate=%d", pr, id, text, len(a.gate))
 		}
-		if err := a.SetStyle(context.Background(), "must not replace captured instructions"); !errors.Is(err, ErrReviewBusy) {
+		style := "must not replace captured instructions"
+		if _, err := a.SetSettings(context.Background(), domain.SettingsUpdate{Settings: a.Settings(), Style: &style}); !errors.Is(err, ErrReviewBusy) {
 			t.Fatalf("context change during remote write: %v", err)
 		}
 		if _, err := a.Publish(context.Background(), identity, "COMMENT", "do not race reply"); !errors.Is(err, ErrReviewBusy) {

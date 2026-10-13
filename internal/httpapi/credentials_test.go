@@ -227,9 +227,6 @@ func TestHTTPCredentialsWriteOnlyAndEnvironmentFallback(t *testing.T) {
 	const environment = "fixture-http-environment-secret"
 	var settings domain.Settings
 	h.request(t, http.MethodGet, "/api/settings", nil, &settings)
-	if settings.CredentialStoragePath != filepath.Join(h.dataDir, "state.json") {
-		t.Fatalf("wrong credential storage path: %q", settings.CredentialStoragePath)
-	}
 	for _, p := range settings.Providers {
 		if p.CredentialStatus != "missing" {
 			t.Fatalf("unexpected initial credential status: %q", p.CredentialStatus)
@@ -348,15 +345,9 @@ func TestHTTPCredentialsRedactModelErrorsAndPersistedOutput(t *testing.T) {
 			t.Fatal("persisted analysis error did not retain the redaction marker")
 		}
 	}
-	for _, route := range []string{"/api/chat", "/api/review"} {
-		var input any = map[string]string{"message": "Explain arithmetic."}
-		if route == "/api/review" {
-			input = struct{}{}
-		}
-		status, body := credentialHTTPJSON(t, h, http.MethodPost, route, input)
-		if status != http.StatusBadRequest || !bytes.Contains(body, []byte("[redacted]")) {
-			t.Fatal("model error did not report a redacted credential")
-		}
+	if status, body := credentialHTTPJSON(t, h, http.MethodPost, "/api/chat", map[string]string{"message": "Explain arithmetic."}); status != http.StatusBadRequest || !bytes.Contains(body, []byte("[redacted]")) {
+		t.Fatal("model error did not report a redacted credential")
+	} else {
 		assertCredentialHTTPPublic(t, body, secret)
 	}
 	peer.mu.Lock()
@@ -633,7 +624,7 @@ func TestHTTPCredentialsActiveAnalysisRetriesOnlyRelevantRole(t *testing.T) {
 	}
 }
 
-func TestHTTPCredentialsUnicodeEscapedChatAndReviewNeverReachPublicState(t *testing.T) {
+func TestHTTPCredentialsUnicodeEscapedChatNeverReachesPublicState(t *testing.T) {
 	h, _ := newCredentialHTTPHarness(t, nil)
 	const secret = "fixture-http-unicode-secret"
 	var escaped strings.Builder
@@ -655,21 +646,7 @@ func TestHTTPCredentialsUnicodeEscapedChatAndReviewNeverReachPublicState(t *test
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if !strings.Contains(input.Messages[0].Content, "Review this changed file") {
-			fmt.Fprint(w, `{"choices":[{"finish_reason":"stop","message":{"content":"Reflected `+escaped.String()+`"}}]}`)
-			return
-		}
-		var payload struct {
-			File domain.File `json:"file"`
-		}
-		if err := json.Unmarshal([]byte(input.Messages[len(input.Messages)-1].Content), &payload); err != nil {
-			t.Error(err)
-			http.Error(w, "invalid fixture review request", 400)
-			return
-		}
-		// The provider envelope decodes once; review.content decodes again in App.Review.
-		content := fmt.Sprintf(`{"comments":[{"path":%q,"startLine":2,"endLine":2,"side":"RIGHT","body":"Reflected %s"}]}`, payload.File.Path, escaped.String())
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]string{"content": content}}}})
+		fmt.Fprint(w, `{"choices":[{"finish_reason":"stop","message":{"content":"Reflected `+escaped.String()+`"}}]}`)
 	}))
 	defer peer.Close()
 	settings := h.app.Settings()
@@ -682,26 +659,11 @@ func TestHTTPCredentialsUnicodeEscapedChatAndReviewNeverReachPublicState(t *test
 	var state domain.State
 	h.request(t, http.MethodPost, "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/7"}, &state)
 	h.awaitAnalysis(t, analysisTerminal)
-	for _, route := range []string{"/api/chat", "/api/review"} {
-		var input any = map[string]string{"message": "Inspect the fixture"}
-		if route == "/api/review" {
-			input = struct{}{}
-		}
-		status, body := credentialHTTPJSON(t, h, http.MethodPost, route, input)
-		if status != http.StatusOK || !bytes.Contains(body, []byte("[redacted]")) {
-			t.Fatalf("redacted response unavailable for %s: status=%d body=%s", route, status, body)
-		}
-		assertCredentialHTTPPublic(t, body, secret, escaped.String())
+	status, body := credentialHTTPJSON(t, h, http.MethodPost, "/api/chat", map[string]string{"message": "Inspect the fixture"})
+	if status != http.StatusOK || !bytes.Contains(body, []byte("[redacted]")) {
+		t.Fatalf("redacted chat response unavailable: status=%d body=%s", status, body)
 	}
-	h.request(t, http.MethodGet, "/api/state", nil, &state)
-	if len(state.Comments) != 2 {
-		t.Fatalf("review comments missing: %+v", state.Comments)
-	}
-	for _, comment := range state.Comments {
-		if comment.Body != "Reflected [redacted]" || comment.Source != "review" {
-			t.Fatalf("nested review content was not redacted before persistence: %+v", comment)
-		}
-	}
+	assertCredentialHTTPPublic(t, body, secret, escaped.String())
 	for _, route := range []string{"/api/state", "/api/settings", "/api/analysis"} {
 		status, body := credentialHTTPJSON(t, h, http.MethodGet, route, nil)
 		if status != http.StatusOK {

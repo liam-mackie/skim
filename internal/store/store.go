@@ -39,6 +39,7 @@ type Data struct {
 	Style        string                 `json:"style"`
 	Reviews      map[string]Record      `json:"reviews"`
 	ProviderKeys map[string]providerKey `json:"providerKeys,omitempty"`
+	GitHubToken  string                 `json:"githubToken,omitempty"`
 	storagePath  string
 }
 type Store struct {
@@ -304,8 +305,7 @@ func cloneState(s domain.State) domain.State {
 	s.Settings = cloneSettings(s.Settings)
 	if s.ReviewRun != nil {
 		run := *s.ReviewRun
-		run.ReviewedPaths = slices.Clone(run.ReviewedPaths)
-		run.SkippedFiles = slices.Clone(run.SkippedFiles)
+		run.Rejected = slices.Clone(run.Rejected)
 		s.ReviewRun = &run
 	}
 	return s

@@ -39,7 +39,7 @@ func Defaults() domain.Settings {
 }
 func Validate(s domain.Settings) error {
 	if s.GitHubTokenEnv != "" && !envName.MatchString(s.GitHubTokenEnv) {
-		return errors.New("GitHub token must be an environment variable name")
+		return errors.New("GitHub token environment variable must be a variable name, not a token; paste tokens into the token field")
 	}
 	ids := map[string]domain.ModelProvider{}
 	for _, p := range s.Providers {

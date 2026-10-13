@@ -17,7 +17,7 @@ const anchor = { path: 'src/code.ts', side: 'RIGHT' as const, start: 1, end: 2, 
 const { ReviewNavigation, readReviewRoute } = await import('../src/lib/navigation.svelte.ts');
 const identity = { prKey: 'github/team/repo/1', baseSha: 'base', headSha: 'head' };
 const permission: Permission = { id: 'permission-1', sessionId: 'session', jobId: 'job-verified', threadId: 'verified', prKey: identity.prKey, prUrl: 'https://github.com/team/repo/pull/1', path: anchor.path, question: 'check this', title: 'Run checks?', options: [{ optionId: 'yes', name: 'Allow', kind: 'allow_once' }, { optionId: 'no', name: 'Deny', kind: 'reject_once' }] };
-const finished: ReviewProgress = { id: 'review-1', status: 'complete', phase: 'finished', completed: 1, total: 1, reviewed: 1, skipped: 0, findings: 1, startedAt: '2026-01-01', updatedAt: '2026-01-01' };
+const finished: ReviewProgress = { id: 'review-1', status: 'complete', phase: 'finished', findings: 1, rejected: 0, startedAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:01Z', finishedAt: '2026-01-01T00:00:01Z' };
 
 function comment(id: string, revision = 1, body = id): ReviewComment {
   return { id, revision, body, path: anchor.path, startLine: 1, endLine: 2, side: 'RIGHT', status: 'pending', source: 'manual', createdAt: '2026-01-01', headSha: 'head' };
@@ -491,6 +491,35 @@ for (const order of ['refresh-first', 'review-first'] as const) {
   });
 }
 
+test('activity groups checks by status and clearing hides only finished ones', async (t) => {
+  const { store, handlers } = setup(t, state(), mountedStore);
+  handlers['GET /state'] = () => state();
+  handlers['GET /permissions'] = () => ({ permissions: [] });
+  await store.boot();
+  await settle();
+  const { mount, unmount, flushSync } = await import('./mount-ui');
+  const { default: VerificationActivity } = await import('../src/components/VerificationActivity.svelte');
+  const target = document.createElement('div');
+  document.body.append(target);
+  const panel = mount(VerificationActivity, { target });
+  t.after(async () => { await unmount(panel); target.remove(); store.activityOpen = false; });
+  const jobs = { complete: accepted('done', 'complete', 3).job, failed: accepted('broke', 'failed', 3).job, running: accepted('busy', 'running', 2).job };
+  const earlier = { ...accepted('old', 'complete', 3).job, cleared: true };
+  store.permissions = [];
+  store.verificationJobs = [jobs.complete, jobs.failed, jobs.running, earlier];
+  store.activityOpen = true;
+  flushSync();
+  const headings = () => [...target.querySelectorAll('#verification-activity h3')].map((h) => h.textContent!.replace(/\s*\d+$/, ''));
+  assert.deepEqual(headings(), ['In progress', 'Failed', 'Complete']);
+  assert.equal(target.querySelector(`[data-job-id="${earlier.id}"]`), null, 'previously cleared checks stay hidden');
+  handlers['POST /verifications/clear'] = () => ({ jobs: [{ ...jobs.complete, cleared: true, revision: 4 }, { ...jobs.failed, cleared: true, revision: 4 }] });
+  [...target.querySelectorAll('button')].find((button) => button.textContent?.includes('Clear finished'))!.click();
+  await settle(); flushSync();
+  assert.deepEqual(headings(), ['In progress']);
+  assert.ok(target.querySelector(`[data-job-id="${jobs.running.id}"]`), 'running checks are never cleared');
+  assert.equal([...target.querySelectorAll('button')].some((button) => button.textContent?.includes('Clear finished')), false);
+});
+
 test('late partial responses cannot enter another PR, including an A-to-B-to-A switch', async (t) => {
   const { store, handlers } = setup(t);
   const chat = deferred<ChatThread>();
@@ -519,10 +548,12 @@ test('late background full snapshots cannot roll back a PR switch or partial set
   store.reviewProgress = { ...finished, status: 'running' };
   const progress = store.refreshReviewProgress();
   await settle();
-  handlers['PUT /style'] = () => ({ style: 'new saved style' });
-  assert.equal(await store.saveStyle('new saved style'), true);
+  handlers['PUT /settings'] = () => store.state!.settings;
+  const saving = store.saveSettings(store.state!.settings, { style: 'new saved style' });
+  await settle();
   snapshot.resolve(state(2));
   await progress;
+  assert.equal(await saving, true);
   assert.equal(store.state!.style, 'new saved style');
   const staleSnapshot = deferred<AppState>();
   handlers['GET /state'] = () => staleSnapshot.promise;

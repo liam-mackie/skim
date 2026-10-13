@@ -24,9 +24,7 @@ type analysisModelControl struct {
 	groupStarted      int
 	foregroundGate    chan struct{}
 	foregroundStarted int
-	reviewGate        chan struct{}
 	chatGate          chan struct{}
-	reviewStarted     int
 	chatStarted       int
 	findingsGate      chan struct{}
 	findingsStarted   int
@@ -81,10 +79,6 @@ func (c *analysisModelControl) release(paths []string, grouping, all bool) {
 	if all && c.foregroundGate != nil {
 		close(c.foregroundGate)
 		c.foregroundGate = nil
-	}
-	if all && c.reviewGate != nil {
-		close(c.reviewGate)
-		c.reviewGate = nil
 	}
 	if all && c.chatGate != nil {
 		close(c.chatGate)
@@ -153,12 +147,6 @@ func (c *analysisModelControl) wrap(next http.Handler) http.Handler {
 			c.mu.Lock()
 			c.foregroundStarted++
 			gate = c.foregroundGate
-			if len(input.Messages) > 0 && strings.Contains(input.Messages[0].Content, "Review this changed file") {
-				c.reviewStarted++
-				if c.reviewGate != nil {
-					gate = c.reviewGate
-				}
-			}
 			if len(input.Messages) > 0 && strings.Contains(input.Messages[0].Content, "Extract only concise, actionable") {
 				c.findingsStarted++
 				if c.findingsGate != nil {
@@ -260,12 +248,13 @@ func TestHTTPAnalysisProgressAndScopedWrites(t *testing.T) {
 		t.Fatalf("load did not return usable state while models were held: %+v", state)
 	}
 	generation := state.Analysis.Generation
-	h.request(t, http.MethodPut, "/api/style", map[string]string{"style": "Keep this foreground edit."}, nil)
+	style := "Keep this foreground edit."
+	h.request(t, http.MethodPut, "/api/settings", domain.SettingsUpdate{Settings: h.app.Settings(), Style: &style}, nil)
 	h.request(t, http.MethodGet, "/api/state", nil, &state)
 	if state.Style != "Keep this foreground edit." || state.Analysis.Generation != generation {
 		t.Fatal("foreground write was blocked or reset analysis")
 	}
-	// Review and chat use the real text peer and remain request-owned operations.
+	// Review (fixture ACP agent) and chat (real text peer) remain request-owned operations.
 	h.request(t, http.MethodPost, "/api/review", struct{}{}, &state)
 	if len(state.Comments) != 2 {
 		t.Fatalf("review did not remain usable: %+v", state.Comments)

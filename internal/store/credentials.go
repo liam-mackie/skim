@@ -31,7 +31,12 @@ func sameDestination(key providerKey, p domain.ModelProvider) bool {
 
 func (d Data) runtimeSettings() domain.Settings {
 	s := cloneSettings(d.Settings)
-	s.CredentialStoragePath = d.storagePath
+	s.GitHubTokenStatus = "missing"
+	if d.GitHubToken != "" {
+		s.GitHubTokenStatus = "saved"
+	} else if strings.TrimSpace(os.Getenv(s.GitHubTokenEnv)) != "" {
+		s.GitHubTokenStatus = "environment"
+	}
 	if s.Providers == nil {
 		s.Providers = []domain.ModelProvider{}
 	}
@@ -52,13 +57,29 @@ func (d Data) runtimeSettings() domain.Settings {
 	return s
 }
 
-// ApplySettings changes this detached candidate only. Commit publishes settings and keys atomically.
-func (d *Data) ApplySettings(settings domain.Settings, updates []domain.ProviderKeyUpdate) error {
+func validSecret(value string) bool {
+	return len(value) <= 8192 && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+// ApplySettings changes this detached candidate only. Commit publishes settings, keys and style atomically.
+func (d *Data) ApplySettings(u domain.SettingsUpdate) error {
+	settings := u.Settings
 	if settings.ACP.ManagedRoot == "" {
 		settings.ACP.ManagedRoot = filepath.Join(filepath.Dir(d.storagePath), "workspaces")
 	}
-	changes := make(map[string]domain.ProviderKeyUpdate, len(updates))
-	for _, update := range updates {
+	if u.Style != nil && len(*u.Style) > 32000 {
+		return errors.New("style guidance exceeds 32 KB")
+	}
+	github := u.GitHubToken
+	github.Token = strings.TrimSpace(github.Token)
+	if github.Remove && github.Token != "" {
+		return errors.New("choose either replacing or removing the saved GitHub token")
+	}
+	if !validSecret(github.Token) {
+		return errors.New("GitHub token must be a single line of at most 8192 bytes")
+	}
+	changes := make(map[string]domain.ProviderKeyUpdate, len(u.ProviderKeys))
+	for _, update := range u.ProviderKeys {
 		if _, exists := changes[update.ProviderID]; exists {
 			return errors.New("only one API key update per provider is allowed")
 		}
@@ -66,7 +87,7 @@ func (d *Data) ApplySettings(settings domain.Settings, updates []domain.Provider
 		if update.Remove && update.APIKey != "" {
 			return errors.New("choose either replacing or removing the saved API key")
 		}
-		if len(update.APIKey) > 8192 || strings.ContainsAny(update.APIKey, "\r\n\x00") {
+		if !validSecret(update.APIKey) {
 			return errors.New("API key must be a single line of at most 8192 bytes")
 		}
 		changes[update.ProviderID] = update
@@ -107,6 +128,15 @@ func (d *Data) ApplySettings(settings domain.Settings, updates []domain.Provider
 		d.Settings.Providers[i].Name = strings.TrimSpace(d.Settings.Providers[i].Name)
 	}
 	d.ProviderKeys = keys
+	switch {
+	case github.Remove:
+		d.GitHubToken = ""
+	case github.Token != "":
+		d.GitHubToken = github.Token
+	}
+	if u.Style != nil {
+		d.Style = *u.Style
+	}
 	d.Settings = d.runtimeSettings()
 	return nil
 }
@@ -125,6 +155,16 @@ func (s *Store) ResolveCredential(p domain.ModelProvider) (string, error) {
 	return key.Key, nil
 }
 
+// GitHubToken returns the saved token, falling back to the configured environment variable.
+func (s *Store) GitHubToken() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.data.GitHubToken != "" {
+		return s.data.GitHubToken
+	}
+	return strings.TrimSpace(os.Getenv(s.data.Settings.GitHubTokenEnv))
+}
+
 func (s *Store) Redact(message string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -132,6 +172,9 @@ func (s *Store) Redact(message string) string {
 		if key.Key != "" {
 			message = strings.ReplaceAll(message, key.Key, "[redacted]")
 		}
+	}
+	if s.data.GitHubToken != "" {
+		message = strings.ReplaceAll(message, s.data.GitHubToken, "[redacted]")
 	}
 	names := []string{s.data.Settings.GitHubTokenEnv}
 	for _, p := range s.data.Settings.Providers {
@@ -148,11 +191,11 @@ func (s *Store) Redact(message string) string {
 // UpdateSettings builds the analysis generation under the same lock as the
 // credential transaction. Old jobs can commit until, but never after, cutover.
 // committed distinguishes a rename from a subsequent directory-sync failure.
-func (s *Store) UpdateSettings(settings domain.Settings, updates []domain.ProviderKeyUpdate, prepare func(*Record, domain.Settings)) (committed bool, err error) {
+func (s *Store) UpdateSettings(u domain.SettingsUpdate, prepare func(*Record, domain.Settings)) (committed bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d := cloneData(s.data)
-	if err := d.ApplySettings(settings, updates); err != nil {
+	if err := d.ApplySettings(u); err != nil {
 		return false, err
 	}
 	if r, ok := d.Reviews[d.Active]; ok && r.State.PullRequest != nil {

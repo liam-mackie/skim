@@ -171,6 +171,8 @@ type VerificationJob struct {
 	Error            string     `json:"error,omitempty"`
 	SuggestionsError string     `json:"suggestionsError,omitempty"`
 	Workspace        *Workspace `json:"workspace,omitempty"`
+	// Cleared hides a finished job from Activity; its thread and report remain.
+	Cleared bool `json:"cleared,omitempty"`
 }
 
 func (j VerificationJob) Active() bool {
@@ -218,11 +220,12 @@ type ACPSettings struct {
 	ManagedRoot string   `json:"managedRoot"`
 }
 type Settings struct {
-	GitHubTokenEnv        string          `json:"githubTokenEnv"`
-	Providers             []ModelProvider `json:"providers"`
-	Roles                 Roles           `json:"roles"`
-	ACP                   ACPSettings     `json:"acp"`
-	CredentialStoragePath string          `json:"credentialStoragePath,omitempty"`
+	GitHubTokenEnv string `json:"githubTokenEnv"`
+	// GitHubTokenStatus is recomputed by the server: saved, environment or missing.
+	GitHubTokenStatus string          `json:"githubTokenStatus,omitempty"`
+	Providers         []ModelProvider `json:"providers"`
+	Roles             Roles           `json:"roles"`
+	ACP               ACPSettings     `json:"acp"`
 }
 
 // ProviderKeyUpdate is accepted only by the settings write endpoint.
@@ -232,19 +235,46 @@ type ProviderKeyUpdate struct {
 	Remove     bool   `json:"remove,omitempty"`
 }
 
+// GitHubTokenUpdate is accepted only by the settings write endpoint. A blank
+// token keeps the saved one; Remove falls back to githubTokenEnv.
+type GitHubTokenUpdate struct {
+	Token  string `json:"token,omitempty"`
+	Remove bool   `json:"remove,omitempty"`
+}
+
+// SettingsUpdate is one settings save: settings, write-only secrets, and the
+// writing style commit together.
 type SettingsUpdate struct {
 	Settings
 	ProviderKeys []ProviderKeyUpdate `json:"providerKeys,omitempty"`
+	GitHubToken  GitHubTokenUpdate   `json:"githubToken"`
+	// Style replaces the writing style when present.
+	Style *string `json:"style,omitempty"`
 }
 type SkippedFile struct {
 	Path   string `json:"path"`
 	Reason string `json:"reason"`
 }
+
+// ReviewRun is the last agent review of a PR: the agent's full report and any
+// comments it proposed that could not be anchored to the diff.
 type ReviewRun struct {
-	HeadSHA       string        `json:"headSha"`
-	CreatedAt     string        `json:"createdAt"`
-	ReviewedPaths []string      `json:"reviewedPaths"`
-	SkippedFiles  []SkippedFile `json:"skippedFiles"`
+	HeadSHA   string            `json:"headSha"`
+	CreatedAt string            `json:"createdAt"`
+	Report    string            `json:"report"`
+	Rejected  []RejectedComment `json:"rejected"`
+	// Error is set when the report held no readable comments; the report is kept.
+	Error string `json:"error,omitempty"`
+}
+
+// RejectedComment is an agent comment that failed diff validation.
+type RejectedComment struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"startLine"`
+	EndLine   int    `json:"endLine"`
+	Side      string `json:"side"`
+	Body      string `json:"body"`
+	Reason    string `json:"reason"`
 }
 type AnalysisTask struct {
 	Status       string        `json:"status"`

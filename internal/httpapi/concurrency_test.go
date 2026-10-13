@@ -57,15 +57,6 @@ func awaitStateOperation(t *testing.T, done <-chan verificationResponse) verific
 	}
 }
 
-func releaseReviewModel(control *analysisModelControl) {
-	control.mu.Lock()
-	defer control.mu.Unlock()
-	if control.reviewGate != nil {
-		close(control.reviewGate)
-		control.reviewGate = nil
-	}
-}
-
 func concurrentManual(state domain.State, body string) domain.ManualComment {
 	pr := state.PullRequest
 	return domain.ManualComment{PRKey: pr.Key(), BaseSHA: pr.BaseSHA, HeadSHA: pr.HeadSHA, Path: "src/calc.go", StartLine: 2, EndLine: 2, Side: "RIGHT", Body: body}
@@ -79,16 +70,16 @@ func TestHTTPReviewChatVerificationAndManualWritesOverlap(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			control := newAnalysisModelControl()
-			control.reviewGate = make(chan struct{})
 			h := newHarnessWithModels(t, control)
 			t.Cleanup(func() { control.release(nil, false, true) })
+			h.agentReview(t, "", true)
 			var loaded domain.State
 			h.request(t, "POST", "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/7"}, &loaded)
 			h.awaitAnalysis(t, analysisTerminal)
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			review := startStateOperation(t, h, ctx, "/api/review", struct{}{})
-			waitCondition(t, func() bool { control.mu.Lock(); defer control.mu.Unlock(); return control.reviewStarted > 0 })
+			reviewPermission := awaitReviewPermission(t, h)
 			verification := startVerification(t, h, ctx)
 			permission := awaitPermission(t, h, verification)
 			var chat domain.ChatThread
@@ -109,7 +100,6 @@ func TestHTTPReviewChatVerificationAndManualWritesOverlap(t *testing.T) {
 				{"POST", "/api/review/finish", finishRequest(loaded, false)},
 				{"POST", "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/8"}},
 				{"PUT", "/api/settings", h.app.Settings()},
-				{"PUT", "/api/style", map[string]string{"style": "new instructions"}},
 				{"POST", "/api/style/import", struct{}{}},
 			} {
 				var failure map[string]string
@@ -136,7 +126,7 @@ func TestHTTPReviewChatVerificationAndManualWritesOverlap(t *testing.T) {
 				return result.state
 			}
 			finishReview := func() domain.State {
-				releaseReviewModel(control)
+				h.request(t, "POST", "/api/permissions/"+reviewPermission, map[string]string{"optionId": "allow-once"}, nil)
 				result := awaitStateOperation(t, review)
 				if result.err != nil {
 					t.Fatal(result.err)
@@ -270,16 +260,17 @@ func TestHTTPVerificationStaleCommitAndCancellationPreserveOtherWork(t *testing.
 
 func TestHTTPCloseDrainsReviewChatAndACP(t *testing.T) {
 	control := newAnalysisModelControl()
-	control.reviewGate, control.chatGate = make(chan struct{}), make(chan struct{})
+	control.chatGate = make(chan struct{})
 	h := newHarnessWithModels(t, control)
 	t.Cleanup(func() { control.release(nil, false, true) })
+	h.agentReview(t, "", true)
 	var state domain.State
 	h.request(t, "POST", "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/7"}, &state)
 	h.awaitAnalysis(t, analysisTerminal)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	review := startStateOperation(t, h, ctx, "/api/review", struct{}{})
-	waitCondition(t, func() bool { control.mu.Lock(); defer control.mu.Unlock(); return control.reviewStarted > 0 })
+	awaitReviewPermission(t, h)
 	verification := startVerification(t, h, ctx)
 	awaitPermission(t, h, verification)
 	chat := make(chan error, 1)
@@ -337,7 +328,8 @@ func TestHTTPEntityRevisionsChangeOnlyWithTheirEntity(t *testing.T) {
 	if chat.Revision != 2 {
 		t.Fatal("appended turn did not advance thread revision")
 	}
-	h.request(t, "PUT", "/api/style", map[string]string{"style": "Updated style."}, nil)
+	style := "Updated style."
+	h.request(t, "PUT", "/api/settings", domain.SettingsUpdate{Settings: h.app.Settings(), Style: &style}, nil)
 	h.request(t, "POST", "/api/pull-request", map[string]string{"url": "https://github.com/acme/widgets/pull/7"}, &state)
 	if state.Comments[0].Revision != 1 || state.Chats[0].Revision != 2 {
 		t.Fatal("metadata or unchanged reload re-versioned entities")
